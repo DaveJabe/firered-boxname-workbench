@@ -402,13 +402,28 @@ export interface FilledScriptResult {
 // --- Manual generator output paste-back -------------------------------------
 //
 // The user runs their own external generator by hand and pastes its output
-// back in. It is stored and displayed verbatim; splitting it into rows below
-// is for DISPLAY ONLY and never changes the saved rawText.
+// back in. It is stored and displayed verbatim. Real generator output mixes
+// several kinds of lines — encoded command lines, an "All commands" section,
+// a "Raw data" section, and a "Box N: ..." box-name section — so the
+// box-name sheet presenter must extract only the `Box N:` lines rather than
+// treating every pasted line as a box-name row. Parsing below is for
+// DISPLAY ONLY and never changes the saved rawText.
 
-/** One display row for pasted generator output. */
-export interface PastedOutputRow {
-  rowNumber: number;
-  /** "Box N" style label when a starting box number was set, else null. */
-  boxLabel: string | null;
-  text: string;
+/** One recognized `Box N: ...` line from pasted generator output. */
+export interface ParsedBoxNameRow {
+  boxNumber: number;
+  /** The original `Box N: ...` line, verbatim. */
+  rawLine: string;
+  /** The spaced-out display text before the bracketed compact form, trimmed for display only. */
+  spacedDisplay: string;
+  /** The compact bracketed form (e.g. "[/?UnFE3n]" -> "/?UnFE3n"), or null if the line had none. */
+  compactText: string | null;
+}
+
+/** The result of parsing pasted generator output for its box-name section. */
+export interface ParsedGeneratorOutput {
+  /** The full pasted text, unchanged. */
+  rawText: string;
+  rows: readonly ParsedBoxNameRow[];
+  warnings: readonly string[];
 }

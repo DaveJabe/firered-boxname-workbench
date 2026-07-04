@@ -6,8 +6,6 @@ import type {
   Finding,
   TargetKind,
   ActionFieldValue,
-  ActionInput,
-  MockGeneratedOutput,
   ScriptFile,
   ScriptScanResult,
   VariableCandidate,
@@ -26,10 +24,8 @@ import { numberLines } from '../core/normalize.js';
 import { SOURCE_TYPE_LABELS, SOURCE_SCHEMA_VERSION, SELECTABLE_SOURCE_TYPES, SOURCE_FIELD_MAX } from '../core/sources.js';
 import { renderReportHtml } from '../report/report.js';
 import { TEMPLATES } from '../templates/checklist-templates.js';
-import { ACTION_TEMPLATES, getActionTemplate, type ActionField, type ActionTemplate } from '../templates/action-templates.js';
-import { defaultActionValues, coerceActionFieldValue, missingRequiredActionFields } from '../core/actionInput.js';
-import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
-import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
+import type { ActionField, ActionTemplate } from '../templates/action-templates.js';
+import { defaultActionValues, coerceActionFieldValue } from '../core/actionInput.js';
 import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
 import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision, upsertCuratedSchema } from '../core/curatedSchemas.js';
 import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../core/schemaBuilder.js';
@@ -52,7 +48,7 @@ import {
   type Screen,
   SCREEN_LABEL,
   SIDEBAR_SCREENS,
-  ADVANCED_SCREENS,
+  sidebarActiveScreen,
   defaultScreenForWorkspace,
   findReusableUntitledWorkspace,
   mostRecentWorkspace,
@@ -68,14 +64,8 @@ interface PasteBackState {
 
 interface ActionBuilderState {
   revisionLabel: string;
-  /** Whether fields come from the built-in mock catalog or a curated schema — mock mode either way. */
-  source: 'builtin' | 'curated';
-  templateId: string;
   curatedSchemaId: string;
   values: Record<string, ActionFieldValue>;
-  output: MockGeneratedOutput | null;
-  savedBlockId: string | null;
-  attemptedGenerate: boolean;
   /** Result of the last "Preview filled script" click, if any. Never invokes a generator. */
   filledScript: FilledScriptResult | null;
   filledScriptSavedBlockId: string | null;
@@ -87,24 +77,32 @@ function makePasteBackState(): PasteBackState {
   return { rawText: '', label: '', parsed: null, savedBlockId: null };
 }
 
-function makeActionBuilderState(revisionLabel: string): ActionBuilderState {
-  const template = ACTION_TEMPLATES[0];
+/** Placeholder used only before any workspace has loaded — always replaced by makeActionBuilderState(project). */
+function makeEmptyActionBuilderState(): ActionBuilderState {
   return {
-    revisionLabel,
-    source: 'builtin',
-    templateId: template.id,
+    revisionLabel: '',
     curatedSchemaId: '',
-    values: defaultActionValues(template),
-    output: null,
-    savedBlockId: null,
-    attemptedGenerate: false,
+    values: {},
     filledScript: null,
     filledScriptSavedBlockId: null,
     pasteBack: makePasteBackState(),
   };
 }
 
-// --- Curated schema builder (Script Library, seeded from a scan) -----------
+/** Seed Run Script state for a workspace: pre-select its first selectable curated schema, if any. */
+function makeActionBuilderState(project: Project): ActionBuilderState {
+  const schema = resolveCuratedSchema(project.curatedSchemas, '');
+  return {
+    revisionLabel: project.metadata.revisionLabel,
+    curatedSchemaId: schema?.id ?? '',
+    values: schema ? defaultActionValues(toActionTemplateShape(schema)) : {},
+    filledScript: null,
+    filledScriptSavedBlockId: null,
+    pasteBack: makePasteBackState(),
+  };
+}
+
+// --- Curated schema builder (Manage Scripts, seeded from a scan) ---------
 //
 // Lets the user turn selected scanner candidates into a CuratedActionSchema
 // by hand, without writing JSON. This only builds a CuratedActionSchema
@@ -231,21 +229,15 @@ function applySchemaFieldBinding(bind: string, candidateKey: string | undefined,
   }
 }
 
-/** Resolve the Action Builder's currently-selected field source to a common
- *  ActionTemplate shape, whichever it came from. `curatedUnavailable` is true
- *  only when curated mode is selected but no selectable schema exists — in
- *  that case `template` is a harmless fallback and must not be used to generate. */
+/** Resolve Run Script's currently-selected curated schema to the common
+ *  ActionTemplate shape the field renderer expects. Null only when no
+ *  selectable curated schema exists at all — callers must not fill/generate then. */
 function resolveActionDefinition(
   ab: ActionBuilderState,
   project: Project,
-): { template: ActionTemplate; curated: CuratedActionSchema | null; curatedUnavailable: boolean } {
-  if (ab.source === 'curated') {
-    const schema = resolveCuratedSchema(project.curatedSchemas, ab.curatedSchemaId);
-    if (schema) return { template: toActionTemplateShape(schema), curated: schema, curatedUnavailable: false };
-    return { template: ACTION_TEMPLATES[0], curated: null, curatedUnavailable: true };
-  }
-  const t = getActionTemplate(ab.templateId) ?? ACTION_TEMPLATES[0];
-  return { template: t, curated: null, curatedUnavailable: false };
+): { template: ActionTemplate; curated: CuratedActionSchema } | null {
+  const schema = resolveCuratedSchema(project.curatedSchemas, ab.curatedSchemaId);
+  return schema ? { template: toActionTemplateShape(schema), curated: schema } : null;
 }
 
 const state: {
@@ -262,7 +254,7 @@ const state: {
   /** Landing screen: whether the full workspace list is expanded (vs. just the most recent one). */
   manageWorkspacesOpen: boolean;
 } = {
-  screen: 'landing',
+  screen: 'actions',
   summaries: [],
   project: null,
   checklistFilter: 'all',
@@ -270,7 +262,7 @@ const state: {
   collapsed: new Set(),
   blockEdit: new Set(),
   highlightRef: null,
-  actionBuilder: makeActionBuilderState(''),
+  actionBuilder: makeEmptyActionBuilderState(),
   schemaEditor: null,
   manageWorkspacesOpen: false,
 };
@@ -315,16 +307,14 @@ function opt(value: string, label: string, current: string): string {
 
 function navRail(): string {
   if (!state.project) return '';
-  const firstAdvancedIdx = SIDEBAR_SCREENS.findIndex((s) => ADVANCED_SCREENS.includes(s));
+  const activeTab = sidebarActiveScreen(state.screen);
   const items = SIDEBAR_SCREENS
-    .map((s, i) => {
-      const active = state.screen === s;
-      const divider = i === firstAdvancedIdx ? '<hr class="rail-divider" /><div class="rail-section-label">Advanced</div>' : '';
-      return `${divider}<button data-action="nav" data-screen="${s}" class="${active ? 'active' : ''}"${active ? ' aria-current="page"' : ''}>${escapeHtml(SCREEN_LABEL[s])}</button>`;
+    .map((s) => {
+      const active = activeTab === s;
+      return `<button data-action="nav" data-screen="${s}" class="${active ? 'active' : ''}"${active ? ' aria-current="page"' : ''}>${escapeHtml(SCREEN_LABEL[s])}</button>`;
     })
     .join('');
   return `<nav class="rail" aria-label="Workspace sections">
-    <button data-action="go-landing">&larr; Recent workspaces</button>
     <h2>${escapeHtml(state.project.metadata.projectTitle || 'Untitled workspace')}</h2>
     ${items}
   </nav>`;
@@ -366,6 +356,7 @@ function render(): void {
     case 'outputs': content = renderOutputs(); break;
     case 'validation': content = renderValidation(); break;
     case 'report': content = renderReport(); break;
+    case 'advanced': content = renderAdvanced(); break;
   }
   app().innerHTML = layout(content);
 
@@ -428,18 +419,18 @@ function renderLanding(): string {
 
 function renderStartHere(): string {
   const p = state.project!;
-  return `<h1>Start</h1>
+  return `<h1>Orientation</h1>
     <p class="muted">A quick orientation for this workspace. Everything here stays local — no network calls, nothing runs in the background.</p>
     <div class="grid2">
       <div class="card">
-        <h3>Action Builder</h3>
-        <p class="muted">Choose a built-in or curated action, fill in its fields, and prepare a mock or filled-script preview.</p>
-        <button class="btn primary" data-action="nav" data-screen="actions">Go to Action Builder</button>
+        <h3>Run Script</h3>
+        <p class="muted">Select a script/action, fill in its fields, and prepare a mock or filled-script preview.</p>
+        <button class="btn primary" data-action="nav" data-screen="actions">Go to Run Script</button>
       </div>
       <div class="card">
-        <h3>Scripts</h3>
-        <p class="muted">Import your own local .txt scripts, scan them, and attach curated schemas for the Action Builder to use.</p>
-        <button class="btn" data-action="nav" data-screen="scripts">Go to Scripts</button>
+        <h3>Manage Scripts</h3>
+        <p class="muted">Import your own local .txt scripts, scan them, and create curated schemas for Run Script to use.</p>
+        <button class="btn" data-action="nav" data-screen="scripts">Go to Manage Scripts</button>
       </div>
     </div>
     <div class="card">
@@ -465,10 +456,52 @@ function renderStartHere(): string {
     </div>`;
 }
 
+function renderAdvanced(): string {
+  return `<h1>Advanced</h1>
+    <p class="muted">Workspace management and secondary tools — most day-to-day work happens in Run Script, Outputs, and Manage Scripts.</p>
+    <div class="grid2">
+      <div class="card">
+        <h3>Workspace Settings</h3>
+        <p class="muted">Workspace title, revision/language labels, mode, and status.</p>
+        <button class="btn" data-action="nav" data-screen="settings">Go to Workspace Settings</button>
+      </div>
+      <div class="card">
+        <h3>Workspaces</h3>
+        <p class="muted">Switch to a different saved workspace, start a new one, load the demo workspace, or import/export a workspace file.</p>
+        <button class="btn" data-action="nav" data-screen="landing">Go to Workspaces</button>
+      </div>
+      <div class="card">
+        <h3>Validation</h3>
+        <p class="muted">Check formatting (line length, glyphs, duplicates) against your settings.</p>
+        <button class="btn" data-action="nav" data-screen="validation">Go to Validation</button>
+      </div>
+      <div class="card">
+        <h3>Report / Export</h3>
+        <p class="muted">Open a printable review report, or export the whole workspace as JSON.</p>
+        <button class="btn" data-action="nav" data-screen="report">Go to Report / Export</button>
+      </div>
+      <div class="card">
+        <h3>Checklist</h3>
+        <p class="muted">Track review prompts and follow-ups.</p>
+        <button class="btn" data-action="nav" data-screen="checklist">Go to Checklist</button>
+      </div>
+      <div class="card">
+        <h3>Notes</h3>
+        <p class="muted">Free-form notes for this workspace.</p>
+        <button class="btn" data-action="nav" data-screen="notes">Go to Notes</button>
+      </div>
+      <div class="card">
+        <h3>Orientation &amp; manual checklist</h3>
+        <p class="muted">A quick overview, plus a step-by-step reference for walking one script through the whole workflow by hand.</p>
+        <button class="btn" data-action="nav" data-screen="start-here">Go to Orientation</button>
+      </div>
+    </div>`;
+}
+
 function renderSettings(): string {
   const p = state.project!;
   const m = p.metadata;
-  return `<h1>Settings</h1>
+  return `<h1>Workspace Settings</h1>
     <div class="card" data-ref="metadata">
       <label for="m-game">Game</label>
       <input type="text" id="m-game" value="FireRed" disabled aria-label="Game (locked to FireRed)" />
@@ -499,7 +532,7 @@ function renderSettings(): string {
     </div>`;
 }
 
-// --- Action Builder (Phase 1: mock output only) -----------------------------
+// --- Run Script (curated schemas only) --------------------------------------
 
 function renderActionField(field: ActionField, values: Record<string, ActionFieldValue>): string {
   const value = values[field.key];
@@ -521,32 +554,6 @@ function renderActionField(field: ActionField, values: Record<string, ActionFiel
     return `${labelHtml}<input type="number" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? 0))}"${minMaxAttrs} aria-label="${attr(field.label)}" />`;
   }
   return `${labelHtml}<input type="text" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? ''))}" placeholder="${attr(field.placeholder ?? '')}" aria-label="${attr(field.label)}" />`;
-}
-
-function boxNameSheet(p: Project, output: MockGeneratedOutput, savedBlockId: string | null): string {
-  const rows = output.rows
-    .map(
-      (r, i) => `<tr>
-        <td>${escapeHtml(r.boxLabel)}</td>
-        <td>${escapeHtml(r.rowLabel)}</td>
-        <td><code>${escapeHtml(r.text)}</code></td>
-        <td><button class="btn small" data-action="copy-box-row" data-row="${i}">Copy row</button></td>
-      </tr>`,
-    )
-    .join('');
-  const saved = savedBlockId && p.importedBlocks.some((b) => b.id === savedBlockId)
-    ? `<p class="muted">Saved &#10003; <button class="btn small" data-action="jump" data-kind="importedBlock" data-ref="${attr(savedBlockId)}">View in Imported text</button></p>`
-    : '';
-  return `<div class="card" data-ref="mock-sheet">
-    <p class="badge warning" style="font-size:0.8rem">MOCK OUTPUT — placeholder only, not a real generator result</p>
-    <p class="muted">Action: ${escapeHtml(output.actionLabel)} · Revision: ${escapeHtml(output.revisionLabel || '—')} · Generated ${escapeHtml(output.generatedAt)}</p>
-    <table><thead><tr><th>Box</th><th>Row</th><th>Box name</th><th></th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="row" style="margin-top:0.5rem">
-      <button class="btn" data-action="copy-all-box-rows">Copy all</button>
-      <button class="btn primary" data-action="save-mock-output">Save to workspace</button>
-    </div>
-    ${saved}
-  </div>`;
 }
 
 function filledScriptSection(result: FilledScriptResult): string {
@@ -620,7 +627,7 @@ function pasteBackCard(p: Project, ab: ActionBuilderState, actionLabel: string):
     <label for="pb-label">Output label / notes</label>
     <input type="text" id="pb-label" data-bind="pasteback.label" value="${attr(pb.label)}" placeholder="e.g. ${attr(actionLabel)} — batch 1" />
     <div class="row" style="margin-top:0.5rem">
-      <button class="btn" data-action="preview-pasted-output">Preview box-name sheet</button>
+      <button class="btn" data-action="preview-pasted-output">Parse box names</button>
       <button class="btn" data-action="copy-pasted-output">Copy all raw output</button>
       <button class="btn primary" data-action="save-pasted-output">Save output to workspace</button>
     </div>
@@ -634,90 +641,61 @@ function curatedFieldExtra(field: CuratedSchemaField | undefined): string {
   const warnings = (field.warnings ?? [])
     .map((w) => `<div class="muted">⚠ ${escapeHtml(w)}</div>`)
     .join('');
-  return `<div class="muted" style="margin:0.1rem 0 0.5rem">
-    maps to script variable <code>${escapeHtml(field.variableName)}</code>${field.helpText ? ' · ' + escapeHtml(field.helpText) : ''}
-  </div>${warnings}`;
-}
-
-function renderCuratedSchemaSourceField(project: Project, curated: CuratedActionSchema | null): string {
-  const selectable = project.curatedSchemas.filter(isSchemaSelectable);
-  if (selectable.length === 0) {
-    return `<p class="muted">No curated schemas yet. <button class="btn small" data-action="nav" data-screen="scripts">Go to Scripts</button></p>`;
-  }
-  const currentId = curated?.id ?? selectable[0].id;
-  const opts = selectable.map((s) => opt(s.id, `${s.label} (${s.status})`, currentId)).join('');
-  return `<label for="ab-curated">Curated schema</label><select id="ab-curated" data-bind="action.curatedSchemaId">${opts}</select>`;
+  const helpText = field.helpText ? `<div class="muted" style="margin:0.1rem 0 0.3rem">${escapeHtml(field.helpText)}</div>` : '';
+  return `${helpText}${warnings}<details style="margin:0.1rem 0 0.5rem"><summary class="muted" style="cursor:pointer;font-size:0.85rem">Variable mapping</summary>
+    <p class="muted">Maps to script variable <code>${escapeHtml(field.variableName)}</code></p>
+  </details>`;
 }
 
 function renderActions(): string {
   const p = state.project!;
   const ab = state.actionBuilder;
-  const { template, curated, curatedUnavailable } = resolveActionDefinition(ab, p);
-  const templateOpts = ACTION_TEMPLATES.map((t) => opt(t.id, t.label, template.id)).join('');
-  const sourceOpts = `${opt('builtin', 'Built-in mock template', ab.source)}${opt('curated', 'Curated schema (Scripts)', ab.source)}`;
+  const selectable = p.curatedSchemas.filter(isSchemaSelectable);
 
-  const missing = ab.attemptedGenerate && !curatedUnavailable ? missingRequiredActionFields(template, ab.values) : [];
-  const curatedByKey = new Map((curated?.fields ?? []).map((f) => [f.key, f]));
-  const fieldsHtml = curatedUnavailable
-    ? ''
-    : template.fields.map((f) => renderActionField(f, ab.values) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
-  const errorHtml = missing.length
-    ? `<p class="badge error" style="display:inline-block;margin-top:0.5rem">Missing required: ${missing.map((f) => escapeHtml(f.label)).join(', ')}</p>`
-    : '';
-  const sheetHtml = ab.output ? boxNameSheet(p, ab.output, ab.savedBlockId) : '';
+  if (selectable.length === 0) {
+    return `<h1>Run Script</h1>
+      <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+      <div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
+        <p class="muted">No scripts are ready yet. Import a script and create a schema first.</p>
+        <button class="btn primary" data-action="nav" data-screen="scripts">Manage scripts</button>
+      </div>`;
+  }
 
-  const curatedStatusLine = curated
-    ? `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span>${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`
-    : '';
+  const resolved = resolveActionDefinition(ab, p)!; // non-null: selectable.length > 0 guarantees a match
+  const { template, curated } = resolved;
+  const schemaOpts = selectable.map((s) => opt(s.id, s.label, curated.id)).join('');
+  const curatedByKey = new Map(curated.fields.map((f) => [f.key, f]));
+  const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
 
-  const linkedScript = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+  const curatedStatusLine = `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span>${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`;
+
+  const linkedScript = curated.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
   const filledScriptCard = linkedScript
     ? `<div class="card">
-        <h3>Preview filled script <span class="pill">manual — no generator invoked</span></h3>
-        <p class="muted">This app does not run the generator. Copy this filled script and paste it into your own local generator.</p>
+        <h3>Filled script <span class="pill">manual — no generator invoked</span></h3>
+        <p class="muted">This app does not run the generator. Copy this script into your external generator.</p>
         <p class="muted">From: ${escapeHtml(linkedScript.filename)}</p>
-        <button class="btn" data-action="preview-filled-script">Preview filled script</button>
+        <button class="btn primary" data-action="preview-filled-script">Preview filled script</button>
         ${ab.filledScript ? filledScriptSection(ab.filledScript) : ''}
       </div>`
     : '';
 
-  const emptyStateHtml = p.curatedSchemas.length === 0
-    ? `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
-        <p class="muted">Choose a built-in action to try the workflow, or <button class="btn small" data-action="nav" data-screen="scripts">import a script</button> to create your own action schema.</p>
-      </div>`
-    : '';
-
-  return `<h1>Action Builder <span class="pill">mock / non-operational</span></h1>
-    <p class="muted">Choose a known action template or a curated schema, fill in its fields, and generate a mock box-name sheet. Output here is always a fixed placeholder — no real generator is connected in this phase.</p>
-    ${emptyStateHtml}
+  return `<h1>Run Script</h1>
+    <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
     <div class="card">
-      <div class="grid2">
-        <div>
-          <label for="ab-revision">Revision label</label>
-          <input type="text" id="ab-revision" data-bind="action.revisionLabel" value="${attr(ab.revisionLabel)}" placeholder="e.g. Rev 1 (documentation only)" />
-        </div>
-        <div>
-          <label for="ab-source">Field source</label>
-          <select id="ab-source" data-bind="action.source">${sourceOpts}</select>
-        </div>
-      </div>
-      ${ab.source === 'builtin'
-        ? `<label for="ab-template">Action template</label><select id="ab-template" data-bind="action.templateId">${templateOpts}</select>`
-        : renderCuratedSchemaSourceField(p, curated)}
+      <label for="ab-revision">Revision label</label>
+      <input type="text" id="ab-revision" data-bind="action.revisionLabel" value="${attr(ab.revisionLabel)}" placeholder="e.g. Rev 1 (documentation only)" />
+      <label for="ab-curated">Script</label>
+      <select id="ab-curated" data-bind="action.curatedSchemaId">${schemaOpts}</select>
       ${curatedStatusLine}
-      ${curatedUnavailable ? '' : `<p class="muted">${escapeHtml(template.description)}</p>`}
+      <p class="muted">${escapeHtml(curated.description)}</p>
       ${fieldsHtml}
-      ${errorHtml}
-      <div class="row" style="margin-top:0.75rem">
-        <button class="btn primary" data-action="generate-mock-sheet"${curatedUnavailable ? ' disabled' : ''}>Generate mock sheet</button>
-      </div>
     </div>
-    ${sheetHtml}
     ${filledScriptCard}
     ${pasteBackCard(p, ab, template.label)}`;
 }
 
-// --- Script Library (developer-only, informational) -------------------------
+// --- Manage Scripts (developer-only, informational) --------------------------
 
 function candidateRow(c: ScriptScanResult['candidates'][number]): string {
   const confBadge = c.confidence === 'high' ? 'info' : c.confidence === 'medium' ? 'warning' : 'error';
@@ -884,12 +862,12 @@ function renderSchemaEditor(script: ScriptFile, scan: ScriptScanResult): string 
     .filter((f): f is CuratedSchemaField => Boolean(f));
   const previewHtml = previewFields.length
     ? previewFields.map(renderPreviewField).join('')
-    : '<div class="empty">Include at least one field to preview the Action Builder form.</div>';
+    : '<div class="empty">Include at least one field to preview the Run Script form.</div>';
   const errorsHtml = editor.errors.length
     ? `<div class="badge error" style="display:block;margin:0.5rem 0">${editor.errors.map((e) => escapeHtml(e)).join('<br>')}</div>`
     : '';
   const savedHtml = editor.savedSchemaId
-    ? `<p class="muted">Saved &#10003; this curated schema is now selectable in Action Builder.</p>`
+    ? `<p class="muted">Saved &#10003; this curated schema is now selectable in Run Script.</p>`
     : '';
   const statusOpts = (['draft', 'reviewed', 'disabled'] as const).map((s) => opt(s, cap(s), editor.status)).join('');
 
@@ -924,7 +902,7 @@ function renderSchemaEditor(script: ScriptFile, scan: ScriptScanResult): string 
     <h3>Included fields</h3>
     ${includedFieldsHtml || '<div class="empty">No fields included yet — check candidates above to include them.</div>'}
 
-    <h3>Preview Action Builder fields</h3>
+    <h3>Preview Run Script fields</h3>
     <p class="muted">Preview only — does not fill scripts or generate output.</p>
     <div class="card">${previewHtml}</div>
 
@@ -994,7 +972,7 @@ function renderScripts(): string {
         <p class="muted">Import a local .txt script. The scanner reads it as plain text and helps you create a curated schema.</p>
       </div>`
     : '';
-  return `<h1>Scripts <span class="pill">developer-only, informational</span></h1>
+  return `<h1>Manage Scripts <span class="pill">developer-only, informational</span></h1>
     <p class="muted">Import local .txt action scripts to inspect them as plain text. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
     ${emptyStateHtml}
     ${scripts || '<div class="empty">No scripts imported yet.</div>'}
@@ -1306,18 +1284,18 @@ async function loadProject(id: string): Promise<void> {
   if (p) {
     state.project = p;
     state.screen = defaultScreenForWorkspace('opened');
-    resetViewState(p.metadata.revisionLabel);
+    resetViewState(p);
     render();
   }
 }
 
-function resetViewState(revisionLabel: string = ''): void {
+function resetViewState(project: Project): void {
   state.checklistFilter = 'all';
   state.findingGroup = 'severity';
   state.collapsed.clear();
   state.blockEdit.clear();
   state.highlightRef = null;
-  state.actionBuilder = makeActionBuilderState(revisionLabel);
+  state.actionBuilder = makeActionBuilderState(project);
   state.schemaEditor = null;
 }
 
@@ -1326,7 +1304,7 @@ function resetViewState(revisionLabel: string = ''): void {
  * never asked to fill in a title/revision/language first. Reuses the most
  * recently updated untitled workspace if one already exists, rather than
  * creating a new blank workspace every time; only creates one when none do.
- * They can fill in metadata later via Settings.
+ * They can fill in metadata later via Advanced -> Workspace Settings.
  */
 async function startNewWorkspace(origin: WorkspaceOrigin): Promise<void> {
   const reusable = findReusableUntitledWorkspace(state.summaries);
@@ -1341,8 +1319,31 @@ async function startNewWorkspace(origin: WorkspaceOrigin): Promise<void> {
   if (!reusable) await putProject(project);
   state.project = project;
   state.screen = defaultScreenForWorkspace(origin);
-  resetViewState(project.metadata.revisionLabel);
+  resetViewState(project);
   await refreshSummaries();
+}
+
+/**
+ * On app launch: silently reopen the most recently used workspace, or
+ * create a fresh blank one if none exist yet, and land on Run Script. The
+ * user should never have to pick or configure a workspace before using the
+ * tool — full workspace management still lives under Advanced -> Workspaces.
+ */
+async function openDefaultWorkspace(): Promise<void> {
+  const recent = mostRecentWorkspace(state.summaries);
+  let project = recent ? await getProject(recent.id) : null;
+  if (!project) {
+    project = createProject(
+      { revisionLabel: '', languageLabel: '', projectTitle: '', mode: 'documentation', templateKey: TEMPLATES[0].key },
+      uid,
+      nowIso,
+    );
+    await putProject(project);
+    state.summaries = await listProjects();
+  }
+  state.project = project;
+  state.screen = 'actions';
+  resetViewState(project);
 }
 
 function jumpTo(kind: TargetKind, ref: string | undefined): void {
@@ -1364,17 +1365,13 @@ async function handleClick(e: Event): Promise<void> {
   const p = state.project;
 
   switch (action) {
-    case 'nav':
-      state.screen = el.dataset.screen as Screen;
+    case 'nav': {
+      const screen = el.dataset.screen as Screen;
+      if (screen === 'landing') state.manageWorkspacesOpen = false;
+      state.screen = screen;
       render();
       break;
-    case 'go-landing':
-      state.project = null;
-      state.screen = 'landing';
-      state.manageWorkspacesOpen = false;
-      resetViewState();
-      await refreshSummaries();
-      break;
+    }
     case 'start-with-action':
       await startNewWorkspace('created');
       break;
@@ -1394,7 +1391,7 @@ async function handleClick(e: Event): Promise<void> {
       await putProject(demo);
       state.project = demo;
       state.screen = defaultScreenForWorkspace('demo');
-      resetViewState(demo.metadata.revisionLabel);
+      resetViewState(demo);
       await refreshSummaries();
       break;
     }
@@ -1445,77 +1442,13 @@ async function handleClick(e: Event): Promise<void> {
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }
-    case 'generate-mock-sheet': {
-      if (!p) break;
-      const ab = state.actionBuilder;
-      const { template, curatedUnavailable } = resolveActionDefinition(ab, p);
-      if (curatedUnavailable) break;
-      ab.attemptedGenerate = true;
-      const missing = missingRequiredActionFields(template, ab.values);
-      if (missing.length > 0) {
-        render();
-        break;
-      }
-      const input: ActionInput = { actionId: template.id, revisionLabel: ab.revisionLabel, values: { ...ab.values } };
-      ab.output = MockGeneratorAdapter.generate(template, input, nowIso);
-      ab.savedBlockId = null;
-      render();
-      break;
-    }
-    case 'copy-box-row': {
-      const ab = state.actionBuilder;
-      const idx = Number(el.dataset.row);
-      const row = ab.output?.rows[idx];
-      if (!row) break;
-      const ok = await copyText(row.text);
-      const orig = el.textContent;
-      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
-      window.setTimeout(() => { el.textContent = orig; }, 1200);
-      break;
-    }
-    case 'copy-all-box-rows': {
-      const ab = state.actionBuilder;
-      if (!ab.output) break;
-      const ok = await copyText(formatBoxNameSheetText(ab.output));
-      const orig = el.textContent;
-      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
-      window.setTimeout(() => { el.textContent = orig; }, 1200);
-      break;
-    }
-    case 'save-mock-output': {
-      if (!p) break;
-      const ab = state.actionBuilder;
-      if (!ab.output) break;
-      const now = nowIso();
-      const block: ImportedTextBlock = {
-        id: uid(),
-        title: `${ab.output.actionLabel} — mock output`,
-        categoryLabel: 'Mock output',
-        revisionLabel: ab.output.revisionLabel,
-        rawText: formatBoxNameSheetText(ab.output),
-        notes: '',
-        source: {
-          type: 'mock-output',
-          label: 'Mock generator output',
-          importedAt: now,
-          schemaVersion: SOURCE_SCHEMA_VERSION,
-          actionId: ab.output.actionId,
-          actionLabel: ab.output.actionLabel,
-          generatedBy: 'mock-generator-adapter',
-        },
-      };
-      p.importedBlocks.push(block);
-      ab.savedBlockId = block.id;
-      commit();
-      break;
-    }
     case 'preview-filled-script': {
       if (!p) break;
       const ab = state.actionBuilder;
-      const { curated } = resolveActionDefinition(ab, p);
-      const script = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
-      if (!curated || !script) break;
-      ab.filledScript = fillScriptFromSchema(script.rawText, curated, ab.values);
+      const resolved = resolveActionDefinition(ab, p);
+      const script = resolved?.curated.scriptId ? p.scripts.find((s) => s.id === resolved.curated.scriptId) : undefined;
+      if (!resolved || !script) break;
+      ab.filledScript = fillScriptFromSchema(script.rawText, resolved.curated, ab.values);
       ab.filledScriptSavedBlockId = null;
       render();
       break;
@@ -1532,8 +1465,9 @@ async function handleClick(e: Event): Promise<void> {
     case 'save-filled-script': {
       if (!p) break;
       const ab = state.actionBuilder;
-      const { template, curated } = resolveActionDefinition(ab, p);
-      if (!ab.filledScript || ab.filledScript.errors.length > 0 || !curated?.scriptId) break;
+      const resolved = resolveActionDefinition(ab, p);
+      if (!resolved || !ab.filledScript || ab.filledScript.errors.length > 0 || !resolved.curated.scriptId) break;
+      const { template, curated } = resolved;
       const script = p.scripts.find((s) => s.id === curated.scriptId);
       const now = nowIso();
       const block: ImportedTextBlock = {
@@ -1619,8 +1553,10 @@ async function handleClick(e: Event): Promise<void> {
       const ab = state.actionBuilder;
       const pb = ab.pasteBack;
       if (!pb.rawText) break;
-      const { template, curated } = resolveActionDefinition(ab, p);
-      const linkedScript = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+      const resolved = resolveActionDefinition(ab, p);
+      if (!resolved) break;
+      const { template, curated } = resolved;
+      const linkedScript = curated.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
       const now = nowIso();
       const block: ImportedTextBlock = {
         id: uid(),
@@ -1853,9 +1789,6 @@ async function handleChange(e: Event): Promise<void> {
 }
 
 function resetGeneratedOutput(ab: ActionBuilderState): void {
-  ab.output = null;
-  ab.savedBlockId = null;
-  ab.attemptedGenerate = false;
   ab.filledScript = null;
   ab.filledScriptSavedBlockId = null;
 }
@@ -1867,36 +1800,20 @@ function applyActionBinding(bind: string, id: string | undefined, value: string,
     case 'action.revisionLabel':
       ab.revisionLabel = value;
       break;
-    case 'action.source': {
-      ab.source = value === 'curated' ? 'curated' : 'builtin';
-      if (project) {
-        const resolved = resolveActionDefinition(ab, project);
-        if (resolved.curated) ab.curatedSchemaId = resolved.curated.id;
-        ab.values = defaultActionValues(resolved.template);
-      }
-      resetGeneratedOutput(ab);
-      break;
-    }
-    case 'action.templateId': {
-      const template = getActionTemplate(value) ?? ACTION_TEMPLATES[0];
-      ab.templateId = template.id;
-      ab.values = defaultActionValues(template);
-      resetGeneratedOutput(ab);
-      break;
-    }
     case 'action.curatedSchemaId': {
       ab.curatedSchemaId = value;
       if (project) {
         const resolved = resolveActionDefinition(ab, project);
-        ab.values = defaultActionValues(resolved.template);
+        if (resolved) ab.values = defaultActionValues(resolved.template);
       }
       resetGeneratedOutput(ab);
       break;
     }
     case 'action.field': {
       if (!id || !project) break;
-      const { template } = resolveActionDefinition(ab, project);
-      const field = template.fields.find((f) => f.key === id);
+      const resolved = resolveActionDefinition(ab, project);
+      if (!resolved) break;
+      const field = resolved.template.fields.find((f) => f.key === id);
       if (!field) break;
       ab.values[id] = coerceActionFieldValue(field, value, checked);
       break;
@@ -2066,5 +1983,6 @@ export async function init(): Promise<void> {
   root.addEventListener('click', (e) => void handleClick(e));
   root.addEventListener('change', (e) => void handleChange(e));
   state.summaries = await listProjects();
+  await openDefaultWorkspace();
   render();
 }

@@ -1,9 +1,11 @@
-// Data model for the FireRed Research Notebook.
+// Data model for the FireRed BoxName Workbench.
 //
 // Every text field below is an opaque string as far as this app is concerned.
-// Nothing in the codebase decodes, transforms, or assigns game-level meaning to
-// any of these values. Text is only ever user-typed, user-imported, or chosen
-// from a fixed list; it is stored and displayed verbatim.
+// Nothing in the codebase decodes or transforms these values on its own. Text
+// is user-typed, user-imported, chosen from a fixed template, or — once a
+// generator adapter exists in a future branch — returned from an existing
+// local script treated as source of truth. It is stored and displayed
+// verbatim, with provenance, either way.
 
 export type ProjectStatus = 'draft' | 'in-review' | 'reviewed' | 'exported';
 export type Mode = 'documentation' | 'checklist-review';

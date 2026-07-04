@@ -1,9 +1,9 @@
-# FireRed Research Notebook
+# FireRed BoxName Workbench
 
-A **local-first documentation and formatting-review companion** for source-level
-FireRed research. It helps you record metadata, work a checklist of setup
-assumptions, keep notes, import pre-existing text you already have, run a
-**formatting-only** linter over it, and print a report.
+A **local-first personal workbench** for known FireRed box-name techniques. It
+helps you choose a known action template, fill in the fields it needs, prepare
+and review script input, present box-name output, keep provenance for
+everything, and copy/print/export the result.
 
 ## Project status
 
@@ -11,18 +11,46 @@ assumptions, keep notes, import pre-existing text you already have, run a
 Projects list, New Project wizard, Metadata, Checklist, Notes, Imported Text
 Blocks, Validation, and Report preview/export, with local (IndexedDB)
 persistence. Typecheck, unit tests, the no-network audit, and the production
-build all pass, and CI runs them on every push and pull request. No Phase 2
-feature work has started; the current focus is keeping the scaffold correct,
-offline, and documentation-only.
+build all pass, and CI runs them on every push and pull request. This pass was
+a **scope and identity refactor**: the project name and boundaries were
+brought in line with its actual purpose. The action-template builder and any
+generator adapter are **explicitly deferred** to a future branch — see
+[docs/scope.md](./docs/scope.md).
 
-## Scope: local-only and documentation-only
+## Scope
 
-- **Local-only.** Everything runs on your machine. Data is stored in IndexedDB;
-  import/export is via local files. There are no accounts, servers, or uploads.
-- **Documentation-only.** The app records, organizes, formatting-checks, and
-  prints *your own* text. It never generates, derives, or transforms game
-  content. Text is only ever **user-typed, user-imported, or chosen from a fixed
-  list**, and it is stored and displayed verbatim.
+This app is a local-first personal tool for:
+
+- choosing known FireRed action templates,
+- filling in the user-facing fields those templates need,
+- preparing and reviewing script input,
+- presenting box-name output,
+- preserving provenance,
+- copying, printing, and exporting output.
+
+See [docs/scope.md](./docs/scope.md) for the full scope statement.
+
+## Boundaries
+
+- **No route discovery** — this tool does not search for or propose new
+  routes, setups, or techniques.
+- **No new exploit research** — it only works with known, already-documented
+  techniques you bring to it via templates or imported text.
+- **No network calls** — everything runs locally; see "Offline by
+  construction" below.
+- **No hidden or background execution** — every action is something you
+  directly triggered, and nothing runs invisibly.
+- **No ROM, save-file, or emulator handling**, unless explicitly added in a
+  future branch with its own scope review.
+- **Existing local scripts/generators are the source of truth** — this app
+  does not reimplement or silently alter what an external script produces; it
+  prepares input for it and helps you review its output.
+- **All output must be reviewable and stored with provenance** — nothing is
+  presented, copied, printed, or exported without a record of where it came
+  from.
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the boundaries every change must
+respect, and [docs/scope.md](./docs/scope.md) for the rationale behind them.
 
 ## Offline by construction
 
@@ -75,21 +103,9 @@ src/report       self-contained printable HTML report renderer
 src/ui           screens and event handling
 test             validator unit tests, including purity/determinism checks
 scripts          no-network audit
+docs             project scope and boundaries
 .github/workflows CI: npm ci, typecheck, test, audit:network, build
 ```
-
-## What this app explicitly does NOT do
-
-- No generation engine — it does not produce, derive, or optimize any content.
-- No assembler or disassembler; no byte/hex codec that transforms content.
-- No route automation, planning, or optimization.
-- No ROM, save-file, emulator, or packet handling.
-- No network calls, telemetry, or analytics.
-- No transformation of imported text into new game-related output — imported
-  text is stored and shown verbatim, and the validators only report findings
-  about its formatting.
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the boundaries every change must respect.
 
 ## Workflow (matches the product design)
 

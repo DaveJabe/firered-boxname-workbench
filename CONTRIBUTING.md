@@ -1,37 +1,39 @@
 # Contributing — scope boundaries (read first)
 
-This project is intentionally a **documentation and formatting-review** tool.
-The following must remain true of every change. A PR that weakens any of these
-should be rejected regardless of how convenient the feature seems.
+FireRed BoxName Workbench is a **local-first personal workbench** for known
+FireRed box-name techniques: choosing action templates, filling in fields,
+preparing and reviewing script input, presenting box-name output, and keeping
+everything reviewable with provenance. See [docs/scope.md](./docs/scope.md)
+for the full scope statement and rationale.
 
-## Forbidden scope
+## Boundaries
 
-These capabilities are out of scope and must never be added:
+These must remain true of every change. A PR that weakens any of these should
+be rejected regardless of how convenient the feature seems.
 
-- **No generation engine** — no producing, deriving, or optimizing content.
-- **No assembler/disassembler** — and no byte/hex codec that transforms content.
-- **No route automation** — no route planning, solving, or optimization.
-- **No ROM/save/emulator handling** — no ROM patching, save-file editing,
-  emulator control, or packet crafting.
+- **No route discovery** — no searching for, proposing, or optimizing new
+  routes, setups, or techniques.
+- **No new exploit research** — only known, already-documented techniques the
+  user brings to the app (via a template or imported text) are in scope.
 - **No network calls** — no `fetch`/XHR/WebSocket/EventSource/sendBeacon,
   remote assets, telemetry, or analytics.
-- **No transformation of imported text into new game-related output** — imported
-  text is stored and displayed verbatim; validators only report formatting
-  findings about it.
-
-## This tool must never
-
-- Generate, derive, assemble, or transform game content of any kind.
-- Include an assembler, disassembler, byte/hex codec used for transformation, a
-  code generator, a route planner/optimizer/solver, or an emulator/save/ROM
-  interface.
-- Map any character, label, or field to a numeric value, address, or identifier.
-- Turn one text field into a *computed* text field. Text is only ever
-  user-typed, user-imported, or selected from a fixed list.
+- **No hidden or background execution** — every action is user-triggered and
+  visible; nothing runs silently, on a timer, or without the user seeing it.
+- **No ROM, save-file, or emulator handling**, unless explicitly added in a
+  future branch with its own scope review.
+- **Existing local scripts/generators are the source of truth** — this app
+  does not reimplement, second-guess, or silently alter what an external
+  script produces. Generator integration itself is a future branch; do not add
+  it opportunistically inside an unrelated change.
+- **All output must be reviewable and stored with provenance** — nothing is
+  presented, copied, printed, or exported without a record of where it came
+  from.
 
 ## This tool must always
 
-- Store and display imported text **verbatim**.
+- Store and display imported (and, once a generator adapter exists, script-
+  provided) text **verbatim** — no silent transformation of user- or
+  script-provided text.
 - Keep the validators in `src/core/validators.ts` **pure**: functions of their
   inputs that return `Finding[]`, never mutating inputs and never emitting
   content. The purity/determinism tests in `test/validators.test.ts` guard this.
@@ -46,4 +48,4 @@ These capabilities are out of scope and must never be added:
 - `npm run typecheck` passes.
 - `npm test` passes (including the safety-contract tests).
 - `npm run audit:network` passes.
-- The change does not add any capability listed under "must never" above.
+- The change does not cross any boundary listed above.

@@ -121,7 +121,7 @@ function topbar(): string {
 
 function layout(content: string): string {
   return `<a href="#main" class="skip">Skip to content</a>
-    <div class="banner">Documentation &amp; review only — this tool does not generate game content. It records, checks the formatting of, and prints your own notes and imported text.</div>
+    <div class="banner">Local &amp; reviewable — no network calls, no hidden execution. Existing local scripts/generators are the source of truth; this app prepares input, reviews output, and keeps provenance.</div>
     ${topbar()}
     <div class="shell">${navRail()}<main id="main" tabindex="-1">${content}</main></div>`;
 }
@@ -171,8 +171,8 @@ function renderProjects(): string {
             </div>`,
           )
           .join('');
-  return `<h1>FireRed Research Notebook</h1>
-    <p class="muted">A local-first place to document and review FireRed research. Nothing here is generated; it stores, checks formatting, and prints your own text.</p>
+  return `<h1>FireRed BoxName Workbench</h1>
+    <p class="muted">A local-first workbench for known FireRed box-name techniques: templates, fields, script input, and reviewable output, all kept with provenance.</p>
     <div class="row">
       <button class="btn primary" data-action="new-project">New project</button>
       <button class="btn" data-action="import-json">Import project (.json)</button>

@@ -1,4 +1,4 @@
-# Continuous integration for the FireRed Research Notebook.
+# Continuous integration for the FireRed BoxName Workbench.
 #
 # This workflow needs NO secrets, tokens, or credentials. The only network
 # access is npm's normal dependency download during `npm ci`; every other step

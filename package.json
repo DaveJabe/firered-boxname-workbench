@@ -1,8 +1,8 @@
 {
-  "name": "firered-research-notebook",
+  "name": "firered-boxname-workbench",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first documentation and formatting-review companion for FireRed source-level research. Documentation and validation only — never generates game content.",
+  "description": "Local-first personal workbench for known FireRed box-name techniques: templates, script input, box-name output, and provenance, reviewed and exported locally with no network calls.",
   "type": "module",
   "scripts": {
     "dev": "vite",

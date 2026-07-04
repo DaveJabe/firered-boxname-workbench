@@ -1,5 +1,6 @@
 // Renders a self-contained, printable HTML report from a project.
-// All user text is HTML-escaped and shown verbatim. Nothing is generated.
+// All user- and script-provided text is HTML-escaped and shown verbatim;
+// nothing is silently transformed.
 
 import type { Project, Finding, ReviewSummary } from '../core/types.js';
 import { computeReviewSummary, isReviewComplete } from '../core/review.js';
@@ -106,7 +107,7 @@ export function renderReportHtml(project: Project, exportedAtIso: string): strin
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:" />
-<title>FireRed Research Notebook — ${esc(m.projectTitle || 'Report')}</title>
+<title>FireRed BoxName Workbench — ${esc(m.projectTitle || 'Report')}</title>
 <style>
   :root { color-scheme: light; }
   body { font: 14px/1.5 -apple-system, system-ui, sans-serif; color: #1a1a1a; margin: 2rem; }
@@ -128,7 +129,7 @@ export function renderReportHtml(project: Project, exportedAtIso: string): strin
   @media print { .toolbar { display: none; } }
 </style></head>
 <body>
-  <div class="banner">Documentation &amp; review only — this report contains user-recorded notes and imported text. No game content was generated.</div>
+  <div class="banner">Local &amp; reviewable — this report contains user-recorded notes, imported text, and provenance. No network calls were made to produce it.</div>
   <div class="toolbar">Use your browser's Print / Save as PDF command to print this report.</div>
 
   <h1>${esc(m.projectTitle || 'Untitled project')}</h1>

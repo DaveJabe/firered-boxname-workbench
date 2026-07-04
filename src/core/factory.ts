@@ -37,5 +37,6 @@ export function createProject(
     settings: { ...DEFAULT_VALIDATION_SETTINGS },
     latestValidation: null,
     projectStatus: 'draft',
+    scripts: [],
   };
 }

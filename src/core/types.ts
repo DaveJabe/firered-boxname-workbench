@@ -157,6 +157,8 @@ export interface Project {
   settings: ValidationSettings;
   latestValidation: ValidationResult | null;
   projectStatus: ProjectStatus;
+  /** Local Script Library — developer-only, informational. See ScriptFile below. */
+  scripts: ScriptFile[];
 }
 
 export interface ReviewSummary {
@@ -220,4 +222,86 @@ export interface MockGeneratedOutput {
   rows: readonly BoxNameRow[];
   /** Always true — a visible marker that this is placeholder, not real, output. */
   isMock: true;
+}
+
+// --- Script Library (developer-only, informational) -------------------------
+//
+// These types describe local script INSPECTION only. A ScriptFile's rawText
+// is stored and displayed verbatim, never executed, assembled, or fed to a
+// generator. The scanner (src/core/scriptScanner.ts) reads that text as text
+// and produces a best-effort, human-reviewed DRAFT (ScriptScanResult /
+// DraftActionSchema) — never a live action template, never real output.
+
+export type CandidateConfidence = 'high' | 'medium' | 'low';
+
+/** A rough, heuristic guess at what kind of Action Builder field a candidate resembles. */
+export type InferredFieldKind = 'number' | 'checkbox' | 'select' | 'text' | 'unknown';
+
+/** A slice of a script's text, split around the first `@@` marker line (if any). */
+export interface ScriptSection {
+  kind: 'header' | 'body';
+  startLine: number;
+  endLine: number;
+  text: string;
+}
+
+/** A candidate variable assignment found in a script's header, before `@@`. */
+export interface VariableCandidate {
+  name: string;
+  rawValue: string;
+  /** 1-based line number within the script's header section. */
+  line: number;
+  /** Trailing same-line comment, or the preceding full-line comment, if any. */
+  nearbyComment?: string;
+  /** A recognized `@input:xxx` tag found on or near this candidate, if any. */
+  annotation?: string;
+  inferredType: InferredFieldKind;
+  confidence: CandidateConfidence;
+}
+
+/** The result of scanning one ScriptFile. Informational only. */
+export interface ScriptScanResult {
+  scriptId: string;
+  scannedAt: string;
+  /** 1-based line number of the first `@@` marker, or null if none was found. */
+  markerLine: number | null;
+  sections: ScriptSection[];
+  candidates: VariableCandidate[];
+}
+
+/** One field in a draft action schema, derived from a single VariableCandidate. */
+export interface DraftActionField {
+  key: string;
+  label: string;
+  inferredType: InferredFieldKind;
+  confidence: CandidateConfidence;
+  sourceLine: number;
+  notes?: string;
+}
+
+/**
+ * A draft, human-reviewable action schema derived from a script scan (or
+ * hand-curated and imported back in). `isDraft` is always true: this is
+ * never automatically wired into ACTION_TEMPLATES or any generator.
+ */
+export interface DraftActionSchema {
+  scriptId: string;
+  scriptFilename: string;
+  generatedAt: string;
+  fields: DraftActionField[];
+  isDraft: true;
+}
+
+/** A locally-imported `.txt` action script, kept for inspection only. */
+export interface ScriptFile {
+  id: string;
+  filename: string;
+  /** Stored verbatim. Never modified, executed, or transformed by the app. */
+  rawText: string;
+  importedAt: string;
+  notes?: string;
+  /** Most recent scan of this script's rawText, if the user has run one. */
+  lastScan?: ScriptScanResult;
+  /** A hand-curated schema imported back in for review; still informational only. */
+  curatedSchema?: DraftActionSchema;
 }

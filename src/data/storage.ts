@@ -12,6 +12,12 @@ import type {
   ValidationResult,
   Finding,
   FindingTarget,
+  ScriptFile,
+  ScriptScanResult,
+  ScriptSection,
+  VariableCandidate,
+  DraftActionSchema,
+  DraftActionField,
 } from '../core/types.js';
 import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/sources.js';
 
@@ -119,6 +125,9 @@ const RULES = [
   'missing-field', 'empty-field', 'inconsistent-label', 'line-length', 'line-count',
   'unsupported-glyph', 'ambiguous-glyph', 'duplicate-item', 'incomplete-assumptions',
 ] as const;
+const SECTION_KINDS = ['header', 'body'] as const;
+const INFERRED_FIELD_KINDS = ['number', 'checkbox', 'select', 'text', 'unknown'] as const;
+const CANDIDATE_CONFIDENCES = ['high', 'medium', 'low'] as const;
 
 function fail(msg: string): never {
   throw new Error(`Invalid project: ${msg}`);
@@ -326,6 +335,112 @@ function parseLatestValidation(v: unknown): ValidationResult | null {
   };
 }
 
+// --- Script Library (developer-only, informational) -------------------------
+
+function parseScriptSection(v: unknown, path: string): ScriptSection {
+  const o = asObject(v, path);
+  return {
+    kind: asEnum(o.kind, SECTION_KINDS, `${path}.kind`),
+    startLine: asNumber(o.startLine, `${path}.startLine`),
+    endLine: asNumber(o.endLine, `${path}.endLine`),
+    text: asString(o.text, `${path}.text`),
+  };
+}
+
+function parseVariableCandidate(v: unknown, path: string): VariableCandidate {
+  const o = asObject(v, path);
+  const candidate: VariableCandidate = {
+    name: asString(o.name, `${path}.name`),
+    rawValue: asString(o.rawValue, `${path}.rawValue`),
+    line: asNumber(o.line, `${path}.line`),
+    inferredType: asEnum(o.inferredType, INFERRED_FIELD_KINDS, `${path}.inferredType`),
+    confidence: asEnum(o.confidence, CANDIDATE_CONFIDENCES, `${path}.confidence`),
+  };
+  const nearbyComment = asOptString(o.nearbyComment, `${path}.nearbyComment`);
+  if (nearbyComment !== undefined) candidate.nearbyComment = nearbyComment;
+  const annotation = asOptString(o.annotation, `${path}.annotation`);
+  if (annotation !== undefined) candidate.annotation = annotation;
+  return candidate;
+}
+
+function parseScriptScanResult(v: unknown, path: string): ScriptScanResult {
+  const o = asObject(v, path);
+  const markerLine = o.markerLine === null ? null : asNumber(o.markerLine, `${path}.markerLine`);
+  return {
+    scriptId: asString(o.scriptId, `${path}.scriptId`),
+    scannedAt: asString(o.scannedAt, `${path}.scannedAt`),
+    markerLine,
+    sections: asArray(o.sections, `${path}.sections`).map((s, i) => parseScriptSection(s, `${path}.sections[${i}]`)),
+    candidates: asArray(o.candidates, `${path}.candidates`).map((c, i) => parseVariableCandidate(c, `${path}.candidates[${i}]`)),
+  };
+}
+
+function parseDraftActionField(v: unknown, path: string): DraftActionField {
+  const o = asObject(v, path);
+  const field: DraftActionField = {
+    key: asString(o.key, `${path}.key`),
+    label: asString(o.label, `${path}.label`),
+    inferredType: asEnum(o.inferredType, INFERRED_FIELD_KINDS, `${path}.inferredType`),
+    confidence: asEnum(o.confidence, CANDIDATE_CONFIDENCES, `${path}.confidence`),
+    sourceLine: asNumber(o.sourceLine, `${path}.sourceLine`),
+  };
+  const notes = asOptString(o.notes, `${path}.notes`);
+  if (notes !== undefined) field.notes = notes;
+  return field;
+}
+
+function parseDraftActionSchema(v: unknown, path: string): DraftActionSchema {
+  const o = asObject(v, path);
+  if (o.isDraft !== true) fail(`${path}.isDraft must be true.`);
+  return {
+    scriptId: asString(o.scriptId, `${path}.scriptId`),
+    scriptFilename: asString(o.scriptFilename, `${path}.scriptFilename`),
+    generatedAt: asString(o.generatedAt, `${path}.generatedAt`),
+    fields: asArray(o.fields, `${path}.fields`).map((f, i) => parseDraftActionField(f, `${path}.fields[${i}]`)),
+    isDraft: true,
+  };
+}
+
+function parseScriptFile(v: unknown, i: number): ScriptFile {
+  const path = `scripts[${i}]`;
+  const o = asObject(v, path);
+  const script: ScriptFile = {
+    id: asString(o.id, `${path}.id`),
+    filename: asString(o.filename, `${path}.filename`),
+    rawText: asString(o.rawText, `${path}.rawText`),
+    importedAt: asString(o.importedAt, `${path}.importedAt`),
+  };
+  const notes = asOptString(o.notes, `${path}.notes`);
+  if (notes !== undefined) script.notes = notes;
+  if (o.lastScan !== undefined && o.lastScan !== null) {
+    script.lastScan = parseScriptScanResult(o.lastScan, `${path}.lastScan`);
+  }
+  if (o.curatedSchema !== undefined && o.curatedSchema !== null) {
+    script.curatedSchema = parseDraftActionSchema(o.curatedSchema, `${path}.curatedSchema`);
+  }
+  return script;
+}
+
+/** Serialize a draft/curated action schema for local export only (no network). */
+export function exportDraftActionSchemaJson(schema: DraftActionSchema): string {
+  return JSON.stringify(schema, null, 2);
+}
+
+/**
+ * Parse and deep-validate a hand-curated action schema JSON file. This is
+ * informational only — it is never wired into ACTION_TEMPLATES or any
+ * generator; it is only stored back onto a ScriptFile for review.
+ */
+export function importCuratedActionSchemaJson(text: string): DraftActionSchema {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('File is not valid JSON.');
+  }
+  return parseDraftActionSchema(parsed, 'root');
+}
+
 function parseProject(v: unknown): Project {
   const o = asObject(v, 'root');
   if (o.schemaVersion !== 1) fail('schemaVersion must be 1.');
@@ -339,5 +454,7 @@ function parseProject(v: unknown): Project {
     settings: parseSettings(o.settings),
     latestValidation: parseLatestValidation(o.latestValidation),
     projectStatus: asEnum(o.projectStatus, STATUSES, 'projectStatus'),
+    // Backwards-compatible: older exports predate the Script Library and have no `scripts` field.
+    scripts: o.scripts !== undefined ? asArray(o.scripts, 'scripts').map((s, i) => parseScriptFile(s, i)) : [],
   };
 }

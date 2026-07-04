@@ -67,13 +67,25 @@ export interface UserNote {
  * mark a block as having come from an external local tool and document that tool,
  * but the app never runs, calls, embeds, or integrates with any external tool.
  * Text still arrives only via manual paste or file import, stored verbatim.
+ * This is also the type used for manually pasted-back generator output: the
+ * user runs their own generator by hand and pastes the result in.
  *
  * `mock-output` marks a block saved from the Action Builder's mock generator
  * (see MockGeneratedOutput below). It is placeholder output only — the mock
  * adapter never computes real game-related content — but it is still stored
  * and displayed verbatim like any other block, with its own provenance.
+ *
+ * `filled-script` marks a block saved from fillScriptFromSchema's output —
+ * this app's own conservative, header-only text substitution. It is stored
+ * and displayed verbatim, like any other block; the app never runs it.
  */
-export type TextSourceType = 'manual-paste' | 'file-import' | 'demo-fixture' | 'external-local-tool' | 'mock-output';
+export type TextSourceType =
+  | 'manual-paste'
+  | 'file-import'
+  | 'demo-fixture'
+  | 'external-local-tool'
+  | 'mock-output'
+  | 'filled-script';
 
 export interface TextSource {
   type: TextSourceType;
@@ -95,12 +107,14 @@ export interface TextSource {
   toolUrl?: string;
   invocationNotes?: string;
 
-  // --- mock-output provenance fields (metadata only) ---
-  // Record which placeholder action template produced a mock-output block.
+  // --- mock-output / filled-script / manual-paste-back provenance fields ---
+  // (metadata only). Record which action and script informed this block.
   // Never read back to compute anything; the app only displays these strings.
   actionId?: string;
   actionLabel?: string;
   generatedBy?: string;
+  /** Id of the ScriptFile this block's text was derived from or pasted for, if any. */
+  scriptId?: string;
 }
 
 export interface ImportedTextBlock {
@@ -322,10 +336,12 @@ export interface ScriptFile {
 // distinct from the auto-generated DraftActionSchema above: it carries a
 // review status, a script-variable mapping per field, and human-facing help
 // text/warnings. It lives in Project.curatedSchemas — separate from the
-// built-in mock ACTION_TEMPLATES catalog — and CAN be selected in the Action
-// Builder, but only ever in mock mode: selecting one changes which fields
-// render and validate, never what MockGeneratorAdapter computes. No script
-// filling and no generator invocation happen anywhere in this model.
+// built-in mock ACTION_TEMPLATES catalog. The Action Builder can select one
+// in mock mode (selecting one only changes which fields render and validate,
+// never what MockGeneratorAdapter computes) AND, when it is linked to an
+// imported script, use it to conservatively fill that script's header (see
+// FilledScriptResult below) for the user to copy into their OWN external
+// generator. No generator is ever invoked by this app.
 
 export type CuratedSchemaStatus = 'draft' | 'reviewed' | 'disabled';
 
@@ -355,4 +371,44 @@ export interface CuratedActionSchema {
   supportedRevisionLabels: readonly string[];
   fields: readonly CuratedSchemaField[];
   status: CuratedSchemaStatus;
+}
+
+// --- Conservative script filling (manual generator workflow) ----------------
+//
+// fillScriptFromSchema (src/core/scriptFiller.ts) only ever replaces the
+// VALUE portion of a simple `name = value` line in a script's HEADER, for
+// variables a CuratedActionSchema explicitly maps — never body lines, never
+// inferred variables, never expression evaluation. It produces text for a
+// human to copy into their OWN external generator; this app never invokes
+// that generator itself.
+
+/** One line changed by fillScriptFromSchema. */
+export interface FilledLineChange {
+  /** 1-based line number in the original script text. */
+  line: number;
+  variableName: string;
+  before: string;
+  after: string;
+}
+
+export interface FilledScriptResult {
+  originalScriptText: string;
+  filledScriptText: string;
+  changedLines: readonly FilledLineChange[];
+  warnings: readonly string[];
+  errors: readonly string[];
+}
+
+// --- Manual generator output paste-back -------------------------------------
+//
+// The user runs their own external generator by hand and pastes its output
+// back in. It is stored and displayed verbatim; splitting it into rows below
+// is for DISPLAY ONLY and never changes the saved rawText.
+
+/** One display row for pasted generator output. */
+export interface PastedOutputRow {
+  rowNumber: number;
+  /** "Box N" style label when a starting box number was set, else null. */
+  boxLabel: string | null;
+  text: string;
 }

@@ -122,6 +122,50 @@ describe('report escapes mock-output provenance', () => {
   });
 });
 
+describe('report escapes manual-workflow provenance (filled-script / paste-back)', () => {
+  it('escapes scriptId and shows generatedBy for a filled-script block', () => {
+    const p = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    p.importedBlocks.push({
+      id: 'b1', title: 'Toy — filled script', categoryLabel: 'Filled script', revisionLabel: 'Rev 1',
+      rawText: 'widgetCount = 42', notes: '',
+      source: {
+        type: 'filled-script', label: 'Filled script (this app)', importedAt: ISO, schemaVersion: 1,
+        actionId: 'toy', actionLabel: 'Toy', generatedBy: 'manual script filler',
+        scriptId: '<script>sid</script>',
+      },
+    });
+    const html = renderReportHtml(p, ISO);
+    expect(html).not.toContain('<script');
+    expect(html).toContain('&lt;script&gt;sid&lt;/script&gt;');
+    expect(html).toContain('manual script filler');
+  });
+
+  it('escapes pasted generator output and its provenance for an external-local-tool block', () => {
+    const p = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    p.importedBlocks.push({
+      id: 'b1', title: 'Toy — manual generator output', categoryLabel: 'Manual generator output', revisionLabel: 'Rev 1',
+      rawText: '<script>evil()</script>\nPLACEHLD', notes: '',
+      source: {
+        type: 'external-local-tool', label: 'Manual external generator output', importedAt: ISO, schemaVersion: 1,
+        actionId: 'toy', actionLabel: 'Toy', generatedBy: 'manual external generator', scriptId: 'script-1',
+      },
+    });
+    const html = renderReportHtml(p, ISO);
+    expect(html).not.toContain('<script>evil');
+    expect(html).toContain('&lt;script&gt;evil()&lt;/script&gt;');
+    expect(html).toContain('manual external generator');
+    expect(html).toContain('PLACEHLD');
+  });
+});
+
 describe('report groups findings by severity', () => {
   it('renders the Error section before the Warning section', () => {
     const p = createProject(

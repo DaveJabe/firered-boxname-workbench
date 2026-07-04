@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import type { ImportedTextBlock } from '../src/core/types.js';
-import { splitPastedOutputForDisplay } from '../src/core/boxNameSheet.js';
 import { createProject } from '../src/core/factory.js';
 import { importProjectJson, exportProjectJson } from '../src/data/storage.js';
 import { SOURCE_SCHEMA_VERSION } from '../src/core/sources.js';
@@ -13,32 +12,8 @@ function makeIdGen(): () => string {
 
 // A harmless, invented placeholder "generator output" for manual verification
 // only — not a real box name, item, address, offset, route step, or opcode.
-const FAKE_PASTED_OUTPUT = 'PLACEHLD-A\nPLACEHLD-B\r\nPLACEHLD-C\t\n\nPLACEHLD-D';
-
-describe('splitPastedOutputForDisplay — presenter does not alter raw output', () => {
-  it('splits into one row per line, each row text matching the source line exactly', () => {
-    const rows = splitPastedOutputForDisplay(FAKE_PASTED_OUTPUT, null);
-    expect(rows.map((r) => r.text)).toEqual(['PLACEHLD-A', 'PLACEHLD-B', 'PLACEHLD-C\t', '', 'PLACEHLD-D']);
-  });
-
-  it('numbers rows from 1 and leaves boxLabel null when no starting box number is given', () => {
-    const rows = splitPastedOutputForDisplay(FAKE_PASTED_OUTPUT, null);
-    expect(rows.map((r) => r.rowNumber)).toEqual([1, 2, 3, 4, 5]);
-    expect(rows.every((r) => r.boxLabel === null)).toBe(true);
-  });
-
-  it('labels rows "Box N", "Box N+1", ... when a starting box number is given', () => {
-    const rows = splitPastedOutputForDisplay(FAKE_PASTED_OUTPUT, 5);
-    expect(rows.map((r) => r.boxLabel)).toEqual(['Box 5', 'Box 6', 'Box 7', 'Box 8', 'Box 9']);
-  });
-
-  it('never mutates or re-derives the raw text — joining row.text with the original newline reproduces it', () => {
-    const rows = splitPastedOutputForDisplay(FAKE_PASTED_OUTPUT, 1);
-    // splitLines normalizes \r\n/\r/\n to line boundaries, so re-joining with
-    // '\n' must reproduce the same sequence of characters within each line.
-    expect(rows.map((r) => r.text).join('\n')).toBe(FAKE_PASTED_OUTPUT.replace(/\r\n|\r/g, '\n'));
-  });
-});
+// See test/generatorOutputParser.test.ts for parsing/presenter coverage.
+const FAKE_PASTED_OUTPUT = 'Box 1: PLACEHLD-A   [PLACEHLD-A]\nBox 2: PLACEHLD-B   [PLACEHLD-B]';
 
 describe('manual paste-back: rawText saved verbatim with provenance', () => {
   function pasteBackBlock(): ImportedTextBlock {

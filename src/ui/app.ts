@@ -15,7 +15,7 @@ import type {
   CuratedActionSchema,
   CuratedSchemaField,
   FilledScriptResult,
-  PastedOutputRow,
+  ParsedGeneratorOutput,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -28,10 +28,11 @@ import { TEMPLATES } from '../templates/checklist-templates.js';
 import { ACTION_TEMPLATES, getActionTemplate, type ActionField, type ActionTemplate } from '../templates/action-templates.js';
 import { defaultActionValues, coerceActionFieldValue, missingRequiredActionFields } from '../core/actionInput.js';
 import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
-import { formatBoxNameSheetText, splitPastedOutputForDisplay } from '../core/boxNameSheet.js';
+import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
 import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
 import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision } from '../core/curatedSchemas.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
+import { parseGeneratorOutput, formatCompactBoxNames, formatRawBoxLines } from '../core/generatorOutputParser.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -55,9 +56,8 @@ const SCREEN_LABEL: Record<Screen, string> = {
 
 interface PasteBackState {
   rawText: string;
-  startingBoxNumber: string;
   label: string;
-  preview: PastedOutputRow[] | null;
+  parsed: ParsedGeneratorOutput | null;
   savedBlockId: string | null;
 }
 
@@ -79,7 +79,7 @@ interface ActionBuilderState {
 }
 
 function makePasteBackState(): PasteBackState {
-  return { rawText: '', startingBoxNumber: '', label: '', preview: null, savedBlockId: null };
+  return { rawText: '', label: '', parsed: null, savedBlockId: null };
 }
 
 function makeActionBuilderState(revisionLabel: string): ActionBuilderState {
@@ -416,37 +416,51 @@ function filledScriptSection(result: FilledScriptResult): string {
     </div>`;
 }
 
-function pastedOutputSheet(rows: readonly PastedOutputRow[]): string {
-  const body = rows
-    .map(
-      (r, i) => `<tr>
-        <td>${r.rowNumber}</td>
-        <td>${r.boxLabel ? escapeHtml(r.boxLabel) : '—'}</td>
-        <td><code>${escapeHtml(r.text)}</code></td>
-        <td><button class="btn small" data-action="copy-pasted-row" data-row="${i}">Copy row</button></td>
-      </tr>`,
-    )
-    .join('');
-  return `<div class="card" style="margin-top:0.5rem">
-    <table><thead><tr><th>Row</th><th>Box label</th><th>Text</th><th></th></tr></thead><tbody>${body}</tbody></table>
-  </div>`;
+function parsedBoxNameSheet(parsed: ParsedGeneratorOutput): string {
+  const warningsHtml = parsed.warnings.length
+    ? `<div class="badge warning" style="display:block;margin:0.5rem 0">${parsed.warnings.map((w) => escapeHtml(w)).join('<br>')}</div>`
+    : '';
+  const tableHtml = parsed.rows.length
+    ? `<div class="card" style="margin-top:0.5rem">
+        <table><thead><tr><th>Box</th><th>Spaced display</th><th>Compact</th><th></th></tr></thead><tbody>${parsed.rows
+          .map(
+            (r, i) => `<tr>
+              <td>Box ${r.boxNumber}</td>
+              <td>${escapeHtml(r.spacedDisplay)}</td>
+              <td>${r.compactText !== null ? `<code>${escapeHtml(r.compactText)}</code>` : '<span class="muted">—</span>'}</td>
+              <td class="row nowrap">
+                <button class="btn small" data-action="copy-parsed-compact" data-row="${i}"${r.compactText === null ? ' disabled' : ''}>Copy compact</button>
+                <button class="btn small" data-action="copy-parsed-raw" data-row="${i}">Copy raw line</button>
+              </td>
+            </tr>`,
+          )
+          .join('')}</tbody></table>
+        <div class="row" style="margin-top:0.5rem">
+          <button class="btn" data-action="copy-all-compact">Copy all compact box names</button>
+          <button class="btn" data-action="copy-all-raw-box-lines">Copy all raw box lines</button>
+        </div>
+      </div>`
+    : '';
+  return `${warningsHtml}${tableHtml}
+    <details style="margin-top:0.5rem">
+      <summary class="muted" style="cursor:pointer">Show full raw output</summary>
+      ${lineNumberView(parsed.rawText)}
+    </details>`;
 }
 
 function pasteBackCard(p: Project, ab: ActionBuilderState, actionLabel: string): string {
   const pb = ab.pasteBack;
-  const preview = pb.preview ? pastedOutputSheet(pb.preview) : '';
+  const preview = pb.parsed ? parsedBoxNameSheet(pb.parsed) : '';
   const saved = pb.savedBlockId && p.importedBlocks.some((b) => b.id === pb.savedBlockId)
     ? `<p class="muted">Saved &#10003; <button class="btn small" data-action="jump" data-kind="importedBlock" data-ref="${attr(pb.savedBlockId)}">View in Imported text</button></p>`
     : '';
   return `<div class="card">
     <h3>Paste generator output</h3>
-    <p class="muted">This app does not run the generator. Paste output from your own local generator here — it is stored and shown exactly as pasted, never normalized, decoded, or transformed.</p>
+    <p class="muted">This app does not run the generator. Paste output from your own local generator here — it is stored and shown exactly as pasted, never normalized, decoded, or transformed. The box-name sheet below shows only the "Box N:" lines it finds; everything else (command lines, "All commands", "Raw data") is ignored for display, but the full raw text is always kept.</p>
     <label for="pb-raw">Raw output</label>
     <textarea id="pb-raw" data-bind="pasteback.rawText" placeholder="Paste your generator's output here">${escapeHtml(pb.rawText)}</textarea>
-    <div class="grid2">
-      <div><label for="pb-start">Starting box number (optional)</label><input type="number" id="pb-start" data-bind="pasteback.startingBoxNumber" value="${attr(pb.startingBoxNumber)}" /></div>
-      <div><label for="pb-label">Output label / notes</label><input type="text" id="pb-label" data-bind="pasteback.label" value="${attr(pb.label)}" placeholder="e.g. ${attr(actionLabel)} — batch 1" /></div>
-    </div>
+    <label for="pb-label">Output label / notes</label>
+    <input type="text" id="pb-label" data-bind="pasteback.label" value="${attr(pb.label)}" placeholder="e.g. ${attr(actionLabel)} — batch 1" />
     <div class="row" style="margin-top:0.5rem">
       <button class="btn" data-action="preview-pasted-output">Preview box-name sheet</button>
       <button class="btn" data-action="copy-pasted-output">Copy all raw output</button>
@@ -1193,17 +1207,45 @@ async function handleClick(e: Event): Promise<void> {
     }
     case 'preview-pasted-output': {
       const ab = state.actionBuilder;
-      const startNum = parseOptInt(ab.pasteBack.startingBoxNumber) ?? null;
-      ab.pasteBack.preview = splitPastedOutputForDisplay(ab.pasteBack.rawText, startNum);
+      ab.pasteBack.parsed = parseGeneratorOutput(ab.pasteBack.rawText);
       render();
       break;
     }
-    case 'copy-pasted-row': {
+    case 'copy-parsed-compact': {
       const ab = state.actionBuilder;
       const idx = Number(el.dataset.row);
-      const row = ab.pasteBack.preview?.[idx];
+      const row = ab.pasteBack.parsed?.rows[idx];
+      if (!row || row.compactText === null) break;
+      const ok = await copyText(row.compactText);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'copy-parsed-raw': {
+      const ab = state.actionBuilder;
+      const idx = Number(el.dataset.row);
+      const row = ab.pasteBack.parsed?.rows[idx];
       if (!row) break;
-      const ok = await copyText(row.text);
+      const ok = await copyText(row.rawLine);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'copy-all-compact': {
+      const ab = state.actionBuilder;
+      if (!ab.pasteBack.parsed) break;
+      const ok = await copyText(formatCompactBoxNames(ab.pasteBack.parsed.rows));
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'copy-all-raw-box-lines': {
+      const ab = state.actionBuilder;
+      if (!ab.pasteBack.parsed) break;
+      const ok = await copyText(formatRawBoxLines(ab.pasteBack.parsed.rows));
       const orig = el.textContent;
       el.textContent = ok ? 'Copied ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
@@ -1462,12 +1504,8 @@ function applyPasteBackBinding(bind: string, value: string): void {
   switch (bind) {
     case 'pasteback.rawText':
       pb.rawText = value;
-      pb.preview = null;
+      pb.parsed = null;
       pb.savedBlockId = null;
-      break;
-    case 'pasteback.startingBoxNumber':
-      pb.startingBoxNumber = value;
-      pb.preview = null;
       break;
     case 'pasteback.label':
       pb.label = value;

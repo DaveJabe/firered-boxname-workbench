@@ -2,11 +2,12 @@
 // All user- and script-provided text is HTML-escaped and shown verbatim;
 // nothing is silently transformed.
 
-import type { Project, Finding, ReviewSummary } from '../core/types.js';
+import type { Project, Finding, ReviewSummary, ImportedTextBlock } from '../core/types.js';
 import { computeReviewSummary, isReviewComplete } from '../core/review.js';
 import { countBySeverity } from '../core/validators.js';
 import { groupBySeverity, TARGET_LABELS } from '../core/findings.js';
 import { SOURCE_TYPE_LABELS } from '../core/sources.js';
+import { parseGeneratorOutput } from '../core/generatorOutputParser.js';
 
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -22,6 +23,37 @@ function esc(s: string): string {
       default: return '&#39;';
     }
   });
+}
+
+/**
+ * For manually pasted-back generator output (external-local-tool blocks),
+ * show the parsed "Box N:" rows — spaced display and compact bracket text
+ * shown separately — alongside any parser warnings. Shown only when at
+ * least one row was found; the full raw text is always kept in the block's
+ * verbatim <pre> section regardless.
+ */
+function parsedBoxNameSection(block: ImportedTextBlock): string {
+  if (block.source.type !== 'external-local-tool') return '';
+  const parsed = parseGeneratorOutput(block.rawText);
+  if (parsed.rows.length === 0) return '';
+  const rows = parsed.rows
+    .map(
+      (r) => `<tr>
+        <td>Box ${r.boxNumber}</td>
+        <td>${esc(r.spacedDisplay)}</td>
+        <td>${r.compactText !== null ? esc(r.compactText) : '—'}</td>
+      </tr>`,
+    )
+    .join('\n');
+  const warnings = parsed.warnings.length
+    ? `<p class="muted">${parsed.warnings.map((w) => esc(w)).join('<br>')}</p>`
+    : '';
+  return `<h4>Parsed box-name rows</h4>
+    <table class="findings">
+      <thead><tr><th>Box</th><th>Spaced display</th><th>Compact</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${warnings}`;
 }
 
 function summaryTable(s: ReviewSummary): string {
@@ -102,6 +134,7 @@ export function renderReportHtml(project: Project, exportedAtIso: string): strin
         ${s.notes ? `<p class="muted">Source notes: ${esc(s.notes)}</p>` : ''}
         ${toolLine}${urlLine}${invLine}${actionLine}
         ${b.notes ? `<p>${esc(b.notes)}</p>` : ''}
+        ${parsedBoxNameSection(b)}
         <pre class="imported">${esc(b.rawText)}</pre>
       </section>`;
     })

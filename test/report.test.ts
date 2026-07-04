@@ -166,6 +166,58 @@ describe('report escapes manual-workflow provenance (filled-script / paste-back)
   });
 });
 
+describe('report shows parsed box-name rows for pasted generator output', () => {
+  function parsedOutputProject(rawText: string) {
+    const p = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    p.importedBlocks.push({
+      id: 'b1', title: 'Toy — manual generator output', categoryLabel: 'Manual generator output', revisionLabel: 'Rev 1',
+      rawText, notes: '',
+      source: {
+        type: 'external-local-tool', label: 'Manual external generator output', importedAt: ISO, schemaVersion: 1,
+        actionId: 'toy', actionLabel: 'Toy', generatedBy: 'manual external generator',
+      },
+    });
+    return p;
+  }
+
+  it('shows spaced display and compact values separately, escaped, and stays script-free', () => {
+    const rawText = [
+      '0xPLACEHOLDER1 ; command line, ignored',
+      'Box 1: <script>evil()</script>   [<img src=x onerror=alert(1)>]',
+      'Box 2: plain display   [compact2]',
+      'All commands:',
+      '0xPLACEHOLDER1',
+      'Raw data:',
+      '00 01',
+    ].join('\n');
+    const html = renderReportHtml(parsedOutputProject(rawText), ISO);
+    expect(html).not.toContain('<script');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;script&gt;evil()&lt;/script&gt;');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).toContain('Parsed box-name rows');
+    expect(html).toContain('compact2');
+    // The full raw text (including the ignored sections) stays available verbatim, escaped.
+    expect(html).toContain('All commands:');
+    expect(html).toContain('00 01');
+  });
+
+  it('includes parser warnings when a row has no bracketed compact text', () => {
+    const html = renderReportHtml(parsedOutputProject('Box 1: no brackets at all'), ISO);
+    expect(html).toContain('Parsed box-name rows');
+    expect(html).toContain('no bracketed compact text found');
+  });
+
+  it('omits the parsed section entirely when no Box N: rows are found', () => {
+    const html = renderReportHtml(parsedOutputProject('just some unrelated text'), ISO);
+    expect(html).not.toContain('Parsed box-name rows');
+  });
+});
+
 describe('report groups findings by severity', () => {
   it('renders the Error section before the Warning section', () => {
     const p = createProject(

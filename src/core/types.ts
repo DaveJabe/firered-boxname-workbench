@@ -280,6 +280,12 @@ export interface VariableCandidate {
   nearbyComment?: string;
   /** A recognized `@input:xxx` tag found on or near this candidate, if any. */
   annotation?: string;
+  /**
+   * The bare hint value from a recognized `@input:xxx` annotation (e.g. "move"
+   * for `@input:move`) — a clean, structured echo of `annotation` for display
+   * and future cross-referencing. Not a lookup into any move/item database.
+   */
+  inputHint?: string;
   inferredType: InferredFieldKind;
   confidence: CandidateConfidence;
   /**
@@ -385,6 +391,15 @@ export interface CuratedSchemaField {
   /** Only meaningful for type 'select'. Values are neutral placeholders. */
   options?: readonly ActionFieldOption[];
   defaultValue?: ActionFieldValue;
+  /**
+   * A clean input-kind hint carried over from a scanner annotation (e.g.
+   * "move" from `@input:move`) — informational only, never looked up against
+   * any move/item database.
+   */
+  inputHint?: string;
+  /** Only meaningful for type 'number'. Display-only range hint — never enforced or evaluated. */
+  min?: number;
+  max?: number;
 }
 
 /** A human-reviewed action schema curated from a scanned local script. */

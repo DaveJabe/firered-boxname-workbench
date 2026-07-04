@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import type { CuratedActionSchema, Project, ScriptFile } from '../src/core/types.js';
 import { createProject } from '../src/core/factory.js';
 import { scanScript } from '../src/core/scriptScanner.js';
-import { candidateToDraftField, validateDraftSchema } from '../src/core/schemaBuilder.js';
-import { isSchemaSelectable, resolveCuratedSchema, upsertCuratedSchema } from '../src/core/curatedSchemas.js';
+import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../src/core/schemaBuilder.js';
+import { isSchemaSelectable, resolveCuratedSchema, upsertCuratedSchema, toActionTemplateShape } from '../src/core/curatedSchemas.js';
 
 const ISO = '2026-01-01T00:00:00.000Z';
 
@@ -186,6 +186,90 @@ describe('schema builder distinguishes user-facing candidates from internal/help
     };
     expect(validateDraftSchema(draft, project)).toEqual([]);
     expect(draft.fields.map((f) => f.variableName)).toEqual(['Move', 'MoveSlot', 'NPC']);
+  });
+});
+
+describe('defaultIncludedCandidateNames — schema-builder default checkboxes', () => {
+  it('includes user-facing candidates (Move, MoveSlot, NPC) by default', () => {
+    const script = makeScriptFile({ id: 'script-2', filename: 'directive.txt', rawText: DIRECTIVE_SHAPED_SCRIPT });
+    const scan = scanScript(script, () => ISO);
+    expect(defaultIncludedCandidateNames(scan.candidates)).toEqual(['Move', 'MoveSlot', 'NPC']);
+  });
+
+  it('leaves internal/helper candidates (ScriptStart, ScriptEnd, NPCOffset) unchecked by default', () => {
+    const script = makeScriptFile({ id: 'script-2', filename: 'directive.txt', rawText: DIRECTIVE_SHAPED_SCRIPT });
+    const scan = scanScript(script, () => ISO);
+    const defaulted = defaultIncludedCandidateNames(scan.candidates);
+    expect(defaulted).not.toContain('ScriptStart');
+    expect(defaulted).not.toContain('ScriptEnd');
+    expect(defaulted).not.toContain('NPCOffset');
+  });
+});
+
+describe('candidateToDraftField preserves @input:xxx hints and infers simple explicit constraints', () => {
+  function byName(name: string) {
+    const script = makeScriptFile({ id: 'script-2', filename: 'directive.txt', rawText: DIRECTIVE_SHAPED_SCRIPT });
+    const scan = scanScript(script, () => ISO);
+    return scan.candidates.find((c) => c.name === name)!;
+  }
+
+  it('preserves the @input:move annotation as a clean inputHint on the candidate and the seeded field', () => {
+    const move = byName('Move');
+    expect(move.inputHint).toBe('move');
+    expect(candidateToDraftField(move).inputHint).toBe('move');
+  });
+
+  it('infers MoveSlot select options 0-3 from "Slots 0-3 are available", preferring select over number+min/max', () => {
+    const field = candidateToDraftField(byName('MoveSlot'));
+    expect(field.type).toBe('select');
+    expect(field.options).toEqual([
+      { value: '0', label: '0' },
+      { value: '1', label: '1' },
+      { value: '2', label: '2' },
+      { value: '3', label: '3' },
+    ]);
+    expect(field.defaultValue).toBe('3'); // the candidate's own scanned value, not invented
+  });
+
+  it('infers NPC select options 1,2,3 from "values 1-3 are usable" list wording', () => {
+    const field = candidateToDraftField(byName('NPC'));
+    expect(field.type).toBe('select');
+    expect(field.options).toEqual([
+      { value: '1', label: '1' },
+      { value: '2', label: '2' },
+      { value: '3', label: '3' },
+    ]);
+    expect(field.defaultValue).toBe('2');
+  });
+
+  it('does not invent a constraint from Move\'s prose comment, which has no range or list', () => {
+    const field = candidateToDraftField(byName('Move'));
+    expect(field.type).toBe('number');
+    expect(field.options).toBeUndefined();
+  });
+});
+
+describe('Action Builder receives curated select/number-with-range fields correctly', () => {
+  it('carries select options through toActionTemplateShape for a comment-inferred field', () => {
+    const moveSlotField = candidateToDraftField(
+      { name: 'MoveSlot', rawValue: '3', line: 1, inferredType: 'number', confidence: 'medium', internal: false, nearbyComment: 'Slots 0-3 are available' },
+    );
+    const schema: CuratedActionSchema = {
+      id: 's', label: 'S', description: '', supportedRevisionLabels: [], status: 'draft', fields: [moveSlotField],
+    };
+    const template = toActionTemplateShape(schema);
+    expect(template.fields[0].type).toBe('select');
+    expect(template.fields[0].options?.map((o) => o.value)).toEqual(['0', '1', '2', '3']);
+  });
+
+  it('carries min/max through toActionTemplateShape for a hand-set number field', () => {
+    const schema: CuratedActionSchema = {
+      id: 's', label: 'S', description: '', supportedRevisionLabels: [], status: 'draft',
+      fields: [{ key: 'amount', label: 'Amount', type: 'number', required: false, variableName: 'amount', min: 0, max: 99 }],
+    };
+    const template = toActionTemplateShape(schema);
+    expect(template.fields[0].min).toBe(0);
+    expect(template.fields[0].max).toBe(99);
   });
 });
 

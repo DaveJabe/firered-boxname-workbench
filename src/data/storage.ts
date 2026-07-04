@@ -370,6 +370,8 @@ function parseVariableCandidate(v: unknown, path: string): VariableCandidate {
   if (nearbyComment !== undefined) candidate.nearbyComment = nearbyComment;
   const annotation = asOptString(o.annotation, `${path}.annotation`);
   if (annotation !== undefined) candidate.annotation = annotation;
+  const inputHint = asOptString(o.inputHint, `${path}.inputHint`);
+  if (inputHint !== undefined) candidate.inputHint = inputHint;
   return candidate;
 }
 
@@ -459,6 +461,10 @@ function parseCuratedSchemaField(v: unknown, path: string): CuratedSchemaField {
     field.options = asArray(o.options, `${path}.options`).map((opt, i) => parseFieldOption(opt, `${path}.options[${i}]`));
   }
   if (o.defaultValue !== undefined) field.defaultValue = asActionFieldValue(o.defaultValue, `${path}.defaultValue`);
+  const inputHint = asOptString(o.inputHint, `${path}.inputHint`);
+  if (inputHint !== undefined) field.inputHint = inputHint;
+  if (o.min !== undefined) field.min = asNumber(o.min, `${path}.min`);
+  if (o.max !== undefined) field.max = asNumber(o.max, `${path}.max`);
   return field;
 }
 

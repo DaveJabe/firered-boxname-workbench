@@ -32,7 +32,7 @@ import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
 import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
 import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
 import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision, upsertCuratedSchema } from '../core/curatedSchemas.js';
-import { candidateToDraftField, validateDraftSchema } from '../core/schemaBuilder.js';
+import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../core/schemaBuilder.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
 import { parseGeneratorOutput, formatCompactBoxNames, formatRawBoxLines } from '../core/generatorOutputParser.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
@@ -128,6 +128,13 @@ interface SchemaEditorState {
 }
 
 function openSchemaEditor(script: ScriptFile): void {
+  const candidates = script.lastScan?.candidates ?? [];
+  const included = new Set(defaultIncludedCandidateNames(candidates));
+  const fields = new Map<string, CuratedSchemaField>();
+  for (const name of included) {
+    const candidate = candidates.find((c) => c.name === name);
+    if (candidate) fields.set(name, candidateToDraftField(candidate));
+  }
   state.schemaEditor = {
     scriptId: script.id,
     id: script.filename.replace(/\.[^./]+$/, ''),
@@ -135,8 +142,8 @@ function openSchemaEditor(script: ScriptFile): void {
     description: '',
     status: 'draft',
     supportedRevisionLabels: '',
-    included: new Set(),
-    fields: new Map(),
+    included,
+    fields,
     errors: [],
     savedSchemaId: null,
   };
@@ -219,6 +226,8 @@ function applySchemaFieldBinding(bind: string, candidateKey: string | undefined,
     case 'schema-field.defaultValue':
       field.defaultValue = coerceActionFieldValue(field, value, checked);
       break;
+    case 'schema-field.min': field.min = parseOptInt(value); break;
+    case 'schema-field.max': field.max = parseOptInt(value); break;
   }
 }
 
@@ -436,6 +445,23 @@ function renderStartHere(): string {
     <div class="card">
       <h3>This workspace so far</h3>
       <p class="muted">${p.scripts.length} script(s) · ${p.curatedSchemas.length} curated schema(s) · ${p.importedBlocks.length} saved output(s) · ${p.checklist.length} checklist item(s)</p>
+    </div>
+    <div class="card">
+      <h3>Manual verification checklist — one script, end to end</h3>
+      <p class="muted">A quick reference for walking a single real script through the whole workflow by hand. Not tracked or saved — just a reminder of the steps.</p>
+      <ol>
+        <li>Import script.</li>
+        <li>Run scanner.</li>
+        <li>Create curated schema.</li>
+        <li>Confirm only intended user-facing fields are included.</li>
+        <li>Fill fields.</li>
+        <li>Preview filled script.</li>
+        <li>Confirm only mapped assignment lines changed.</li>
+        <li>Copy filled script to external generator manually.</li>
+        <li>Paste generator output back.</li>
+        <li>Confirm parsed Box rows.</li>
+        <li>Save output.</li>
+      </ol>
     </div>`;
 }
 
@@ -481,14 +507,18 @@ function renderActionField(field: ActionField, values: Record<string, ActionFiel
     const checked = Boolean(value ?? field.defaultValue ?? false);
     return `<label class="row" style="margin-top:0.6rem"><input type="checkbox" data-bind="action.field" data-id="${attr(field.key)}" style="width:auto"${checked ? ' checked' : ''} /> &nbsp;${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
   }
-  const labelHtml = `<label>${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
+  const rangeHint = field.min !== undefined || field.max !== undefined
+    ? ` <span class="muted">(${field.min ?? '—'}–${field.max ?? '—'})</span>`
+    : '';
+  const labelHtml = `<label>${escapeHtml(field.label)}${field.required ? ' *' : ''}${rangeHint}</label>`;
   if (field.type === 'select') {
     const current = String(value ?? field.options?.[0]?.value ?? '');
     const opts = (field.options ?? []).map((o) => opt(o.value, o.label, current)).join('');
     return `${labelHtml}<select data-bind="action.field" data-id="${attr(field.key)}" aria-label="${attr(field.label)}">${opts}</select>`;
   }
   if (field.type === 'number') {
-    return `${labelHtml}<input type="number" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? 0))}" aria-label="${attr(field.label)}" />`;
+    const minMaxAttrs = `${field.min !== undefined ? ` min="${field.min}"` : ''}${field.max !== undefined ? ` max="${field.max}"` : ''}`;
+    return `${labelHtml}<input type="number" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? 0))}"${minMaxAttrs} aria-label="${attr(field.label)}" />`;
   }
   return `${labelHtml}<input type="text" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? ''))}" placeholder="${attr(field.placeholder ?? '')}" aria-label="${attr(field.label)}" />`;
 }
@@ -796,8 +826,14 @@ function schemaFieldEditor(candidateName: string, field: CuratedSchemaField): st
     <input type="text" data-bind="schema-field.defaultValue" data-id="${idAttr}" value="${attr(String(field.defaultValue ?? ''))}" />
     <label>Options — one per line, "value | label" (only used when type is Select)</label>
     <textarea data-bind="schema-field.optionsText" data-id="${idAttr}" placeholder="option-a | Example option A">${escapeHtml(optionsText)}</textarea>
+    <label>Min / Max — optional, only used when type is Number</label>
+    <div class="grid2">
+      <div><input type="text" data-bind="schema-field.min" data-id="${idAttr}" value="${attr(String(field.min ?? ''))}" placeholder="Min" /></div>
+      <div><input type="text" data-bind="schema-field.max" data-id="${idAttr}" value="${attr(String(field.max ?? ''))}" placeholder="Max" /></div>
+    </div>
     <label>Warnings — one per line (optional)</label>
     <textarea data-bind="schema-field.warningsText" data-id="${idAttr}">${escapeHtml(warningsText)}</textarea>
+    ${field.inputHint ? `<p class="muted">Input hint: <code>${escapeHtml(field.inputHint)}</code> (informational only — no move/item database)</p>` : ''}
     <div class="row" style="margin-top:0.5rem">
       <button class="btn danger small" data-action="toggle-schema-candidate-off" data-id="${idAttr}">Remove field</button>
     </div>
@@ -810,7 +846,10 @@ function renderPreviewField(field: CuratedSchemaField): string {
   if (field.type === 'checkbox') {
     return `<label class="row" style="margin-top:0.6rem"><input type="checkbox" disabled style="width:auto"${value ? ' checked' : ''} /> &nbsp;${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
   }
-  const labelHtml = `<label>${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
+  const rangeHint = field.min !== undefined || field.max !== undefined
+    ? ` <span class="muted">(${field.min ?? '—'}–${field.max ?? '—'})</span>`
+    : '';
+  const labelHtml = `<label>${escapeHtml(field.label)}${field.required ? ' *' : ''}${rangeHint}</label>`;
   if (field.type === 'select') {
     const opts = (field.options ?? [])
       .map((o) => `<option${o.value === value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`)
@@ -818,7 +857,8 @@ function renderPreviewField(field: CuratedSchemaField): string {
     return `${labelHtml}<select disabled>${opts}</select>`;
   }
   if (field.type === 'number') {
-    return `${labelHtml}<input type="number" disabled value="${attr(String(value ?? 0))}" />`;
+    const minMaxAttrs = `${field.min !== undefined ? ` min="${field.min}"` : ''}${field.max !== undefined ? ` max="${field.max}"` : ''}`;
+    return `${labelHtml}<input type="number" disabled value="${attr(String(value ?? 0))}"${minMaxAttrs} />`;
   }
   return `${labelHtml}<input type="text" disabled value="${attr(String(value ?? ''))}" placeholder="${attr(field.helpText ?? '')}" />`;
 }

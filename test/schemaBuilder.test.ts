@@ -70,7 +70,7 @@ describe('candidateToDraftField', () => {
     const candidate = scan.candidates.find((c) => c.name === 'widgetCount')!;
     const field = candidateToDraftField(candidate);
     expect(field.key).toBe('widgetCount');
-    expect(field.label).toBe('widgetCount');
+    expect(field.label).toBe('Widget count');
     expect(field.type).toBe('number');
     expect(field.variableName).toBe('widgetCount');
     expect(field.required).toBe(false);
@@ -116,6 +116,76 @@ describe('candidateToDraftField', () => {
     const field = candidateToDraftField(candidate);
     expect(field.type).toBe('text');
     expect(field.defaultValue).toBe('something_odd');
+  });
+});
+
+// Same directive/"do not modify" shape covered in scriptScanner.test.ts —
+// used here to confirm the schema builder seeds labels correctly and
+// naturally separates user-facing from internal/helper candidates.
+const DIRECTIVE_SHAPED_SCRIPT = [
+  '@ title = "Toy NPC move-teaching script"',
+  '@@ author = "Toy Author"',
+  '@@ exit = "ToyExitRoutine"',
+  '',
+  'Move = 1 @input:move',
+  'MoveSlot = 3    ;Slots 0-3 are available',
+  'NPC = 2 ;sets which NPC on the map to run, values 1-3 are usable in this toy fixture',
+  '',
+  ';Do not modify these values',
+  'ScriptStart = (MoveSlot * 0xPLACEHOLDER1) + 0xPLACEHOLDER2',
+  'ScriptEnd = Move + (0xPLACEHOLDER3)',
+  'NPCOffset = 0xPLACEHOLDER4 + (NPC * 0xPLACEHOLDER5)',
+  '@@',
+  'PretendBodyLine',
+].join('\n');
+
+describe('candidateToDraftField label seeding', () => {
+  it('humanizes variable names into readable labels: Move, MoveSlot -> Move slot, NPC stays NPC', () => {
+    const script = makeScriptFile({ id: 'script-2', filename: 'directive.txt', rawText: DIRECTIVE_SHAPED_SCRIPT });
+    const scan = scanScript(script, () => ISO);
+    const byName = (n: string) => scan.candidates.find((c) => c.name === n)!;
+    expect(candidateToDraftField(byName('Move')).label).toBe('Move');
+    expect(candidateToDraftField(byName('MoveSlot')).label).toBe('Move slot');
+    expect(candidateToDraftField(byName('NPC')).label).toBe('NPC');
+  });
+
+  it('seeds help text from the nearby comment and a warning from the annotation, inventing no constraints', () => {
+    const script = makeScriptFile({ id: 'script-2', filename: 'directive.txt', rawText: DIRECTIVE_SHAPED_SCRIPT });
+    const scan = scanScript(script, () => ISO);
+    const move = scan.candidates.find((c) => c.name === 'Move')!;
+    const field = candidateToDraftField(move);
+    expect(field.helpText).toBe(move.nearbyComment);
+    expect(field.warnings).toEqual([`Scanner annotation: ${move.annotation}`]);
+  });
+});
+
+describe('schema builder distinguishes user-facing candidates from internal/helper ones', () => {
+  it('flags internal/helper candidates via candidate.internal, the signal the UI defaults to unchecked', () => {
+    const script = makeScriptFile({ id: 'script-2', filename: 'directive.txt', rawText: DIRECTIVE_SHAPED_SCRIPT });
+    const scan = scanScript(script, () => ISO);
+    expect(scan.candidates.filter((c) => !c.internal).map((c) => c.name)).toEqual(['Move', 'MoveSlot', 'NPC']);
+    expect(scan.candidates.filter((c) => c.internal).map((c) => c.name)).toEqual(['ScriptStart', 'ScriptEnd', 'NPCOffset']);
+  });
+
+  it('builds a valid schema from only the user-facing candidates, leaving internal/helper ones out entirely', () => {
+    const project = makeProject();
+    const script = makeScriptFile({ id: 'script-2', filename: 'directive.txt', rawText: DIRECTIVE_SHAPED_SCRIPT });
+    project.scripts.push(script);
+    const scan = scanScript(script, () => ISO);
+    const userFacing = scan.candidates.filter((c) => !c.internal);
+
+    const draft: CuratedActionSchema = {
+      id: 'move-teach-schema',
+      label: 'Move slot 1',
+      description: 'Toy schema built from only the user-facing candidates.',
+      scriptId: script.id,
+      scriptFilename: script.filename,
+      supportedRevisionLabels: [],
+      status: 'draft',
+      fields: userFacing.map(candidateToDraftField),
+    };
+    expect(validateDraftSchema(draft, project)).toEqual([]);
+    expect(draft.fields.map((f) => f.variableName)).toEqual(['Move', 'MoveSlot', 'NPC']);
   });
 });
 

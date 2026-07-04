@@ -194,3 +194,157 @@ describe('draft action schema', () => {
     expect(schema.isDraft).toBe(true);
   });
 });
+
+// A harmless toy fixture modeled on the shape of community NPC-script tools
+// (leading `@`/`@@` metadata directives, semicolon comments, an `@input:xxx`
+// annotation, a "do not modify" internal-values block) — but with invented
+// author/title/exit strings, placeholder hex tokens, and generic body text
+// standing in for real offsets/opcodes/payload bytes, none of which this
+// module ever evaluates anyway.
+const DIRECTIVE_SHAPED_SCRIPT = [
+  '@ title = "Toy NPC move-teaching script"',
+  '@@ author = "Toy Author"',
+  '@@ exit = "ToyExitRoutine"',
+  '',
+  ';After executing this code, talk to the sample NPC described in this toy fixture.',
+  '',
+  ';After talking to the NPC, this replaces a move slot with the chosen value, for review purposes only.',
+  'Move = 1 @input:move',
+  'MoveSlot = 3    ;Slots 0-3 are available',
+  '',
+  'NPC = 2 ;sets which NPC on the map to run, values 1-3 are usable in this toy fixture',
+  '',
+  ';Do not modify these values',
+  'ScriptStart = (MoveSlot * 0xPLACEHOLDER1) + 0xPLACEHOLDER2',
+  'ScriptEnd = Move + (0xPLACEHOLDER3)',
+  'NPCOffset = 0xPLACEHOLDER4 + (NPC * 0xPLACEHOLDER5)',
+  '@@',
+  '',
+  '; body text only, never scanned as code',
+  'PretendBodyLine1',
+  'PretendBodyLine2 referencing {NPCOffset}',
+  'PretendBodyLine3 referencing {ScriptStart}',
+].join('\n');
+
+function byName(scan: ReturnType<typeof scanScript>, name: string) {
+  return scan.candidates.find((c) => c.name === name);
+}
+
+describe('marker detection ignores directive lines that merely contain "@@"', () => {
+  it('does not treat `@@ author = "..."` as the separator', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    expect(scan.markerLine).not.toBe(2);
+  });
+
+  it('does not treat `@@ exit = "..."` as the separator', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    expect(scan.markerLine).not.toBe(3);
+  });
+
+  it('finds the marker only at the line whose trimmed text is exactly "@@"', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    expect(scan.markerLine).toBe(17);
+  });
+
+  it('reports correct header/body line counts around the real marker', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    const header = scan.sections.find((s) => s.kind === 'header')!;
+    const body = scan.sections.find((s) => s.kind === 'body')!;
+    expect(header.text.split('\n')).toHaveLength(16);
+    expect(body.text.split('\n')).toHaveLength(5);
+    expect(body.text).toContain('PretendBodyLine1');
+  });
+});
+
+describe('header directive metadata is captured separately from candidates', () => {
+  it('captures title/author/exit as directives, not candidate variables', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    expect(scan.directives.map((d) => d.key)).toEqual(['title', 'author', 'exit']);
+    expect(scan.title).toBe('Toy NPC move-teaching script');
+    expect(scan.author).toBe('Toy Author');
+    expect(scan.exit).toBe('ToyExitRoutine');
+    expect(byName(scan, 'title')).toBeUndefined();
+    expect(byName(scan, 'author')).toBeUndefined();
+    expect(byName(scan, 'exit')).toBeUndefined();
+  });
+});
+
+describe('candidate extraction on the directive-shaped fixture', () => {
+  it('detects Move, with its value separated from its inline @input:move annotation', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    const move = byName(scan, 'Move');
+    expect(move).toBeDefined();
+    expect(move?.rawValue).toBe('1');
+    expect(move?.annotation).toBe('@input:move');
+  });
+
+  it('gives Move high confidence and captures the preceding full-line comment as its nearby comment', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    const move = byName(scan, 'Move');
+    expect(move?.inferredType).toBe('number');
+    expect(move?.confidence).toBe('high');
+    expect(move?.nearbyComment).toBe(
+      'After talking to the NPC, this replaces a move slot with the chosen value, for review purposes only.',
+    );
+  });
+
+  it('detects MoveSlot and captures its semicolon trailing comment', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    const moveSlot = byName(scan, 'MoveSlot');
+    expect(moveSlot).toBeDefined();
+    expect(moveSlot?.rawValue).toBe('3');
+    expect(moveSlot?.nearbyComment).toBe('Slots 0-3 are available');
+    expect(moveSlot?.confidence).toBe('medium');
+  });
+
+  it('detects NPC and captures its semicolon trailing comment', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    const npc = byName(scan, 'NPC');
+    expect(npc).toBeDefined();
+    expect(npc?.rawValue).toBe('2');
+    expect(npc?.nearbyComment).toBe('sets which NPC on the map to run, values 1-3 are usable in this toy fixture');
+    expect(npc?.confidence).toBe('medium');
+  });
+});
+
+describe('"do not modify" marks following header assignments as internal/helper', () => {
+  it('leaves Move, MoveSlot, and NPC as non-internal, user-facing candidates', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    expect(byName(scan, 'Move')?.internal).toBe(false);
+    expect(byName(scan, 'MoveSlot')?.internal).toBe(false);
+    expect(byName(scan, 'NPC')?.internal).toBe(false);
+  });
+
+  it('marks ScriptStart, ScriptEnd, and NPCOffset as internal/helper, with low confidence', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    for (const name of ['ScriptStart', 'ScriptEnd', 'NPCOffset']) {
+      const c = byName(scan, name);
+      expect(c?.internal).toBe(true);
+      expect(c?.confidence).toBe('low');
+    }
+  });
+
+  it('still lists internal/helper candidates in scanner output, for transparency', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    expect(scan.candidates.map((c) => c.name)).toEqual([
+      'Move', 'MoveSlot', 'NPC', 'ScriptStart', 'ScriptEnd', 'NPCOffset',
+    ]);
+  });
+});
+
+describe('body lines are counted but never scanned for candidates', () => {
+  it('does not extract `{ScriptStart}`/`{NPCOffset}` body references as candidates', () => {
+    const scan = scanScript(makeScript(DIRECTIVE_SHAPED_SCRIPT), () => ISO);
+    expect(scan.candidates.some((c) => c.name.includes('{'))).toBe(false);
+    // Exactly the six header assignments — nothing extra from the body.
+    expect(scan.candidates).toHaveLength(6);
+  });
+
+  it('never modifies the script rawText while scanning', () => {
+    const script = makeScript(DIRECTIVE_SHAPED_SCRIPT);
+    const before = JSON.stringify(script);
+    scanScript(script, () => ISO);
+    expect(JSON.stringify(script)).toBe(before);
+    expect(script.rawText).toBe(DIRECTIVE_SHAPED_SCRIPT);
+  });
+});

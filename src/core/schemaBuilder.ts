@@ -24,6 +24,27 @@ function unquote(raw: string): string {
   return m ? m[2] : raw;
 }
 
+/** Split into camelCase/PascalCase/ACRONYM words, keeping runs of 2+ uppercase letters (e.g. "NPC") intact. */
+const WORD_TOKEN = /[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|[0-9]+/g;
+
+/**
+ * Turn a variable name into a readable label seed: `Move` -> "Move",
+ * `MoveSlot` -> "Move slot", `NPC` -> "NPC". Acronym-like all-uppercase
+ * words are preserved as-is; other words are lowercased except the very
+ * first letter of the label. Purely cosmetic — the user can always edit it.
+ */
+function humanizeVariableName(name: string): string {
+  const tokens = name.match(WORD_TOKEN);
+  if (!tokens || tokens.length === 0) return name;
+  return tokens
+    .map((t, i) => {
+      if (/^[A-Z]{2,}$/.test(t)) return t; // acronym — keep as-is
+      const lower = t.toLowerCase();
+      return i === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
+    })
+    .join(' ');
+}
+
 /** Guess a field's default value from its candidate's raw scanned text — never invented. */
 function defaultValueFromRawValue(type: CuratedSchemaField['type'], rawValue: string): ActionFieldValue {
   const v = rawValue.trim();
@@ -46,7 +67,7 @@ export function candidateToDraftField(candidate: VariableCandidate): CuratedSche
   const type: CuratedSchemaField['type'] = candidate.inferredType === 'unknown' ? 'text' : candidate.inferredType;
   const field: CuratedSchemaField = {
     key: candidate.name,
-    label: candidate.name,
+    label: humanizeVariableName(candidate.name),
     type,
     required: false,
     variableName: candidate.name,

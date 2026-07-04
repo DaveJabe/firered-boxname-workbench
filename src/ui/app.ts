@@ -683,14 +683,32 @@ function renderActions(): string {
 
 function candidateRow(c: ScriptScanResult['candidates'][number]): string {
   const confBadge = c.confidence === 'high' ? 'info' : c.confidence === 'medium' ? 'warning' : 'error';
-  return `<tr>
+  return `<tr${c.internal ? ' class="muted"' : ''}>
     <td>${escapeHtml(c.name)}</td>
     <td><code>${escapeHtml(c.rawValue)}</code></td>
     <td>${c.nearbyComment ? escapeHtml(c.nearbyComment) : '—'}</td>
     <td>${c.annotation ? escapeHtml(c.annotation) : '—'}</td>
     <td>${escapeHtml(c.inferredType)}</td>
     <td><span class="badge ${confBadge}">${escapeHtml(c.confidence)}</span></td>
+    <td>${c.internal ? '<span class="badge warning">Internal/helper</span>' : 'User-facing'}</td>
   </tr>`;
+}
+
+function directiveSummary(scan: ScriptScanResult): string {
+  const shortcuts: string[] = [];
+  if (scan.title) shortcuts.push(`Title: ${escapeHtml(scan.title)}`);
+  if (scan.author) shortcuts.push(`Author: ${escapeHtml(scan.author)}`);
+  if (scan.exit) shortcuts.push(`Exit: ${escapeHtml(scan.exit)}`);
+  if (scan.directives.length === 0) return '';
+  const rows = scan.directives
+    .map((d) => `<tr><td><code>${escapeHtml(d.key)}</code></td><td>${escapeHtml(d.rawValue)}</td><td>${d.line}</td></tr>`)
+    .join('');
+  return `<h3>Script directives <span class="pill">metadata only, not schema fields</span></h3>
+    ${shortcuts.length ? `<p class="muted">${shortcuts.join(' · ')}</p>` : ''}
+    <details>
+      <summary class="muted" style="cursor:pointer">Show all ${scan.directives.length} directive line(s)</summary>
+      <table><thead><tr><th>Key</th><th>Value</th><th>Line</th></tr></thead><tbody>${rows}</tbody></table>
+    </details>`;
 }
 
 function draftSchemaList(schema: DraftActionSchema): string {
@@ -801,7 +819,11 @@ function renderSchemaEditor(script: ScriptFile, scan: ScriptScanResult): string 
   const editor = state.schemaEditor;
   if (!editor || editor.scriptId !== script.id) return '';
 
-  const rows = scan.candidates.map((c) => schemaCandidateRow(c, editor)).join('');
+  const userFacing = scan.candidates.filter((c) => !c.internal);
+  const internalCandidates = scan.candidates.filter((c) => c.internal);
+  const userRows = userFacing.map((c) => schemaCandidateRow(c, editor)).join('');
+  const internalRows = internalCandidates.map((c) => schemaCandidateRow(c, editor)).join('');
+  const candidateTableHead = '<thead><tr><th>Include</th><th>Name</th><th>Value</th><th>Inferred type</th><th>Confidence</th><th>Nearby comment</th><th>Annotation</th></tr></thead>';
   const includedNames = Array.from(editor.included);
   const includedFieldsHtml = includedNames
     .map((name) => {
@@ -840,10 +862,16 @@ function renderSchemaEditor(script: ScriptFile, scan: ScriptScanResult): string 
     </div>
     <p class="muted">Linked script: ${escapeHtml(script.filename)} (<code>${escapeHtml(script.id)}</code>)</p>
 
-    <h3>Scanner candidates</h3>
-    ${scan.candidates.length
-      ? `<table><thead><tr><th>Include</th><th>Name</th><th>Value</th><th>Inferred type</th><th>Confidence</th><th>Nearby comment</th><th>Annotation</th></tr></thead><tbody>${rows}</tbody></table>`
-      : '<div class="empty">No candidate variables found before the @@ marker.</div>'}
+    <h3>Likely user-facing candidates</h3>
+    ${userFacing.length
+      ? `<table>${candidateTableHead}<tbody>${userRows}</tbody></table>`
+      : '<div class="empty">No likely user-facing candidates found before the @@ marker.</div>'}
+
+    ${internalCandidates.length
+      ? `<h3>Internal / helper candidates <span class="pill">not recommended for schema fields</span></h3>
+        <p class="muted">These follow a "do not modify" comment in the script header, or otherwise look like computed/internal values rather than user input. They're shown for transparency and left unchecked by default.</p>
+        <table class="muted">${candidateTableHead}<tbody>${internalRows}</tbody></table>`
+      : ''}
 
     <h3>Included fields</h3>
     ${includedFieldsHtml || '<div class="empty">No fields included yet — check candidates above to include them.</div>'}
@@ -870,8 +898,9 @@ function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: P
   return `<div class="card" style="border-color:#e0a458;background:#fffaf2">
     <p class="muted">Scanned ${escapeHtml(scan.scannedAt)} · marker line: ${scan.markerLine ?? 'not found'}</p>
     <p class="muted">Header: ${header ? numberLines(header.text).length : 0} line(s) · Body: ${body ? numberLines(body.text).length : 0} line(s)</p>
+    ${directiveSummary(scan)}
     ${scan.candidates.length
-      ? `<table><thead><tr><th>Name</th><th>Value</th><th>Nearby comment</th><th>Annotation</th><th>Inferred type</th><th>Confidence</th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<table><thead><tr><th>Name</th><th>Value</th><th>Nearby comment</th><th>Annotation</th><th>Inferred type</th><th>Confidence</th><th>Scope</th></tr></thead><tbody>${rows}</tbody></table>`
       : '<div class="empty">No candidate variables found before the @@ marker.</div>'}
     <h3>Draft action schema</h3>
     <p class="badge warning" style="display:inline-block">Scanner output is a draft. Review manually before creating an action template.</p>

@@ -8,14 +8,7 @@
 // always returns a fixed placeholder string — nothing here encodes or
 // derives real game data.
 
-import type { ActionFieldValue } from '../core/types.js';
-
-export type ActionFieldType = 'text' | 'number' | 'select' | 'checkbox';
-
-export interface ActionFieldOption {
-  value: string;
-  label: string;
-}
+import type { ActionFieldValue, ActionFieldType, ActionFieldOption } from '../core/types.js';
 
 export interface ActionField {
   key: string;

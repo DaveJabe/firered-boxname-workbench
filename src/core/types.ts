@@ -159,6 +159,8 @@ export interface Project {
   projectStatus: ProjectStatus;
   /** Local Script Library — developer-only, informational. See ScriptFile below. */
   scripts: ScriptFile[];
+  /** Hand-reviewed action schemas curated from scanned scripts. See CuratedActionSchema below. */
+  curatedSchemas: CuratedActionSchema[];
 }
 
 export interface ReviewSummary {
@@ -197,6 +199,15 @@ export const DEFAULT_VALIDATION_SETTINGS: ValidationSettings = {
 
 /** A single field's value, as entered by the user in the Action Builder. */
 export type ActionFieldValue = string | number | boolean;
+
+/** A concrete, renderable Action Builder field shape — no 'unknown' variant. */
+export type ActionFieldType = 'text' | 'number' | 'select' | 'checkbox';
+
+/** A neutral, user-facing option for a 'select' field. */
+export interface ActionFieldOption {
+  value: string;
+  label: string;
+}
 
 /** The user's filled-in inputs for one action template, before generation. */
 export interface ActionInput {
@@ -280,9 +291,10 @@ export interface DraftActionField {
 }
 
 /**
- * A draft, human-reviewable action schema derived from a script scan (or
- * hand-curated and imported back in). `isDraft` is always true: this is
- * never automatically wired into ACTION_TEMPLATES or any generator.
+ * A draft, auto-generated action schema derived from a script scan. `isDraft`
+ * is always true: this is a starting point for a human to hand-edit into a
+ * CuratedActionSchema (below) — it is never automatically wired into
+ * ACTION_TEMPLATES or any generator on its own.
  */
 export interface DraftActionSchema {
   scriptId: string;
@@ -302,6 +314,45 @@ export interface ScriptFile {
   notes?: string;
   /** Most recent scan of this script's rawText, if the user has run one. */
   lastScan?: ScriptScanResult;
-  /** A hand-curated schema imported back in for review; still informational only. */
-  curatedSchema?: DraftActionSchema;
+}
+
+// --- Curated action schemas (mock mode only) --------------------------------
+//
+// A CuratedActionSchema is a HAND-REVIEWED field mapping for a script,
+// distinct from the auto-generated DraftActionSchema above: it carries a
+// review status, a script-variable mapping per field, and human-facing help
+// text/warnings. It lives in Project.curatedSchemas — separate from the
+// built-in mock ACTION_TEMPLATES catalog — and CAN be selected in the Action
+// Builder, but only ever in mock mode: selecting one changes which fields
+// render and validate, never what MockGeneratorAdapter computes. No script
+// filling and no generator invocation happen anywhere in this model.
+
+export type CuratedSchemaStatus = 'draft' | 'reviewed' | 'disabled';
+
+/** One reviewed field: a mapping from a script variable to an Action Builder field. */
+export interface CuratedSchemaField {
+  key: string;
+  label: string;
+  type: ActionFieldType;
+  required: boolean;
+  /** The script variable this field maps to (usually a VariableCandidate.name). */
+  variableName: string;
+  helpText?: string;
+  warnings?: readonly string[];
+  /** Only meaningful for type 'select'. Values are neutral placeholders. */
+  options?: readonly ActionFieldOption[];
+  defaultValue?: ActionFieldValue;
+}
+
+/** A human-reviewed action schema curated from a scanned local script. */
+export interface CuratedActionSchema {
+  id: string;
+  label: string;
+  description: string;
+  scriptId?: string;
+  scriptFilename?: string;
+  /** Empty = supports any revision. */
+  supportedRevisionLabels: readonly string[];
+  fields: readonly CuratedSchemaField[];
+  status: CuratedSchemaStatus;
 }

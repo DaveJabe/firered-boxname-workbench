@@ -6,7 +6,6 @@ import {
   importProjectJson,
   exportProjectJson,
   exportDraftActionSchemaJson,
-  importCuratedActionSchemaJson,
 } from '../src/data/storage.js';
 
 const ISO = '2026-01-01T00:00:00.000Z';
@@ -188,21 +187,10 @@ describe('draft action schema', () => {
     expect(exportDraftActionSchemaJson(a)).toBe(exportDraftActionSchemaJson(b));
   });
 
-  it('is always marked isDraft, and round-trips through the curated-schema JSON import path', () => {
+  it('is always marked isDraft — a starting point for a curated schema, not a live template', () => {
     const script = makeScript(TOY_SCRIPT);
     const scan = scanScript(script, () => ISO);
     const schema = buildDraftActionSchema(script, scan, () => ISO);
     expect(schema.isDraft).toBe(true);
-    const reimported = importCuratedActionSchemaJson(exportDraftActionSchemaJson(schema));
-    expect(reimported).toEqual(schema);
-  });
-
-  it('rejects a curated schema JSON missing isDraft: true', () => {
-    const script = makeScript(TOY_SCRIPT);
-    const scan = scanScript(script, () => ISO);
-    const schema = buildDraftActionSchema(script, scan, () => ISO);
-    const obj = JSON.parse(exportDraftActionSchemaJson(schema));
-    obj.isDraft = false;
-    expect(() => importCuratedActionSchemaJson(JSON.stringify(obj))).toThrow(/isDraft/);
   });
 });

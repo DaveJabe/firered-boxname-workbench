@@ -7,7 +7,7 @@ describe('demo project fixture', () => {
   it('passes deep import validation and has the expected shape', () => {
     const p = importProjectJson(DEMO_PROJECT_JSON);
     expect(p.metadata.game).toBe('FireRed');
-    expect(p.metadata.projectTitle).toBe('Sample documentation project');
+    expect(p.metadata.projectTitle).toBe('Sample workbench');
     expect(p.checklist.length).toBeGreaterThan(0);
     expect(p.importedBlocks.length).toBeGreaterThan(0);
   });

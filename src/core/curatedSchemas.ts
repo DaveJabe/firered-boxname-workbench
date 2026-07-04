@@ -8,8 +8,9 @@
 // filling or real generation can happen through this path.
 
 import type { ActionTemplate } from '../templates/action-templates.js';
-import type { CuratedActionSchema } from './types.js';
+import type { CuratedActionSchema, GameTarget } from './types.js';
 import { normalizeLabel } from './normalize.js';
+import { checkTargetCompatibility } from './gameTarget.js';
 
 /** Adapt a CuratedActionSchema to the same shape the Action Builder already
  *  renders/validates for built-in templates — no catalog wiring needed. */
@@ -62,4 +63,30 @@ export function upsertCuratedSchema(schemas: CuratedActionSchema[], schema: Cura
   const idx = schemas.findIndex((s) => s.id === schema.id);
   if (idx >= 0) schemas[idx] = schema;
   else schemas.push(schema);
+}
+
+/**
+ * Schemas that should populate Run Script's default dropdown for a selected
+ * target: reviewed, non-disabled, and an exact target match. Deliberately
+ * excludes draft schemas and non-exact matches even if otherwise selectable
+ * — see advancedRunnableSchemas for those. Never a silent fallback.
+ */
+export function defaultRunnableSchemas(
+  schemas: readonly CuratedActionSchema[],
+  runTarget: GameTarget,
+): CuratedActionSchema[] {
+  return schemas.filter((s) => s.status === 'reviewed' && checkTargetCompatibility(s.target, runTarget) === 'exact');
+}
+
+/**
+ * Selectable schemas that do NOT qualify as default-runnable for this
+ * target (draft status, unknown/mixed target, or a different target) —
+ * meant for an explicit "show other schemas" disclosure, never auto-selected.
+ */
+export function advancedRunnableSchemas(
+  schemas: readonly CuratedActionSchema[],
+  runTarget: GameTarget,
+): CuratedActionSchema[] {
+  const defaultIds = new Set(defaultRunnableSchemas(schemas, runTarget).map((s) => s.id));
+  return schemas.filter((s) => isSchemaSelectable(s) && !defaultIds.has(s.id));
 }

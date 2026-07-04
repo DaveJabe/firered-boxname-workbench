@@ -4,6 +4,7 @@ import { createProject } from '../src/core/factory.js';
 import { scanScript } from '../src/core/scriptScanner.js';
 import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../src/core/schemaBuilder.js';
 import { isSchemaSelectable, resolveCuratedSchema, upsertCuratedSchema, toActionTemplateShape } from '../src/core/curatedSchemas.js';
+import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 
 const ISO = '2026-01-01T00:00:00.000Z';
 
@@ -43,6 +44,7 @@ function makeSchema(over: Partial<CuratedActionSchema> = {}): CuratedActionSchem
     id: 'toy-schema',
     label: 'Toy curated schema',
     description: 'A hand-reviewed, toy-only field mapping for the fixture script.',
+    target: UNKNOWN_TARGET,
     scriptId: 'script-1',
     scriptFilename: 'toy.txt',
     supportedRevisionLabels: [],
@@ -178,6 +180,7 @@ describe('schema builder distinguishes user-facing candidates from internal/help
       id: 'move-teach-schema',
       label: 'Move slot 1',
       description: 'Toy schema built from only the user-facing candidates.',
+      target: UNKNOWN_TARGET,
       scriptId: script.id,
       scriptFilename: script.filename,
       supportedRevisionLabels: [],
@@ -255,7 +258,7 @@ describe('Action Builder receives curated select/number-with-range fields correc
       { name: 'MoveSlot', rawValue: '3', line: 1, inferredType: 'number', confidence: 'medium', internal: false, nearbyComment: 'Slots 0-3 are available' },
     );
     const schema: CuratedActionSchema = {
-      id: 's', label: 'S', description: '', supportedRevisionLabels: [], status: 'draft', fields: [moveSlotField],
+      id: 's', label: 'S', description: '', target: UNKNOWN_TARGET, supportedRevisionLabels: [], status: 'draft', fields: [moveSlotField],
     };
     const template = toActionTemplateShape(schema);
     expect(template.fields[0].type).toBe('select');
@@ -264,7 +267,7 @@ describe('Action Builder receives curated select/number-with-range fields correc
 
   it('carries min/max through toActionTemplateShape for a hand-set number field', () => {
     const schema: CuratedActionSchema = {
-      id: 's', label: 'S', description: '', supportedRevisionLabels: [], status: 'draft',
+      id: 's', label: 'S', description: '', target: UNKNOWN_TARGET, supportedRevisionLabels: [], status: 'draft',
       fields: [{ key: 'amount', label: 'Amount', type: 'number', required: false, variableName: 'amount', min: 0, max: 99 }],
     };
     const template = toActionTemplateShape(schema);
@@ -289,6 +292,28 @@ describe('validateDraftSchema', () => {
     expect(errors).toContain('Schema id is required.');
     expect(errors).toContain('Label is required.');
     expect(errors).toContain('Include at least one field.');
+  });
+
+  it('rejects a reviewed schema whose target is still Unknown/Mixed', () => {
+    const project = makeProject();
+    project.scripts.push(makeScriptFile());
+    const draft = makeSchema({ status: 'reviewed', target: UNKNOWN_TARGET });
+    const errors = validateDraftSchema(draft, project);
+    expect(errors.some((e) => e.includes('Reviewed schemas need an explicit'))).toBe(true);
+  });
+
+  it('accepts a reviewed schema once it has an explicit, fully-known target', () => {
+    const project = makeProject();
+    project.scripts.push(makeScriptFile());
+    const draft = makeSchema({ status: 'reviewed', target: { game: 'FireRed', language: 'English', revision: '1.0' } });
+    expect(validateDraftSchema(draft, project)).toEqual([]);
+  });
+
+  it('allows a draft schema to keep an Unknown/Mixed target', () => {
+    const project = makeProject();
+    project.scripts.push(makeScriptFile());
+    const draft = makeSchema({ status: 'draft', target: UNKNOWN_TARGET });
+    expect(validateDraftSchema(draft, project)).toEqual([]);
   });
 
   it('rejects a duplicate field key', () => {
@@ -387,6 +412,7 @@ describe('a schema built by the builder appears in and drives the Action Builder
       id: 'built-schema',
       label: 'Built from scan',
       description: 'Toy schema assembled from one included candidate.',
+      target: UNKNOWN_TARGET,
       scriptId: script.id,
       scriptFilename: script.filename,
       supportedRevisionLabels: [],

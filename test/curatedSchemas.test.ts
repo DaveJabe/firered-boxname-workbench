@@ -9,7 +9,10 @@ import {
   isSchemaSelectable,
   resolveCuratedSchema,
   supportsRevision,
+  defaultRunnableSchemas,
+  advancedRunnableSchemas,
 } from '../src/core/curatedSchemas.js';
+import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 import {
   importProjectJson,
   exportProjectJson,
@@ -44,6 +47,7 @@ function makeCuratedSchema(over: Partial<CuratedActionSchema> = {}): CuratedActi
     id: 'toy-schema',
     label: 'Toy curated schema',
     description: 'A hand-reviewed, toy-only field mapping for the fixture script.',
+    target: UNKNOWN_TARGET,
     scriptId: 'script-1',
     scriptFilename: 'toy.txt',
     supportedRevisionLabels: [],
@@ -257,5 +261,45 @@ describe('curated schema appears in and drives Run Script (mock mode only)', () 
       expect(row.text).not.toContain('widgetLabel');
       expect(row.text).toBe(MOCK_PLACEHOLDER_TEXT);
     }
+  });
+});
+
+describe('defaultRunnableSchemas / advancedRunnableSchemas — Run Script target filtering', () => {
+  const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+  const fireRed11 = { game: 'FireRed', language: 'English', revision: '1.1' } as const;
+
+  it('defaultRunnableSchemas keeps only reviewed schemas with an exact target match', () => {
+    const reviewedExact = makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 });
+    const reviewedOtherTarget = makeCuratedSchema({ id: 'b', status: 'reviewed', target: fireRed11 });
+    const draftExact = makeCuratedSchema({ id: 'c', status: 'draft', target: fireRed10 });
+    const disabledExact = makeCuratedSchema({ id: 'd', status: 'disabled', target: fireRed10 });
+    const schemas = [reviewedExact, reviewedOtherTarget, draftExact, disabledExact];
+    expect(defaultRunnableSchemas(schemas, fireRed10).map((s) => s.id)).toEqual(['a']);
+  });
+
+  it('excludes reviewed schemas with an Unknown/Mixed target from the default list, even if the selected target is also Unknown', () => {
+    const reviewedUnknown = makeCuratedSchema({ id: 'a', status: 'reviewed', target: UNKNOWN_TARGET });
+    expect(defaultRunnableSchemas([reviewedUnknown], UNKNOWN_TARGET)).toEqual([]);
+  });
+
+  it('advancedRunnableSchemas lists selectable schemas that are not in the default set — draft, or a different/unknown target', () => {
+    const reviewedExact = makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 });
+    const draftExact = makeCuratedSchema({ id: 'b', status: 'draft', target: fireRed10 });
+    const reviewedOtherTarget = makeCuratedSchema({ id: 'c', status: 'reviewed', target: fireRed11 });
+    const disabled = makeCuratedSchema({ id: 'd', status: 'disabled', target: fireRed10 });
+    const schemas = [reviewedExact, draftExact, reviewedOtherTarget, disabled];
+    const advanced = advancedRunnableSchemas(schemas, fireRed10);
+    expect(advanced.map((s) => s.id).sort()).toEqual(['b', 'c']);
+    expect(advanced.some((s) => s.id === 'a')).toBe(false); // already in the default set
+    expect(advanced.some((s) => s.id === 'd')).toBe(false); // disabled, never selectable at all
+  });
+
+  it('supports multiple schemas sharing the same actionKey but targeting different revisions', () => {
+    const v10 = makeCuratedSchema({ id: 'teach-any-move-fr-en-10', actionKey: 'teach-any-move', status: 'reviewed', target: fireRed10 });
+    const v11 = makeCuratedSchema({ id: 'teach-any-move-fr-en-11', actionKey: 'teach-any-move', status: 'reviewed', target: fireRed11 });
+    expect(v10.id).not.toBe(v11.id); // schema id stays unique per target-specific variant
+    expect(v10.actionKey).toBe(v11.actionKey); // same stable action concept
+    expect(defaultRunnableSchemas([v10, v11], fireRed10).map((s) => s.id)).toEqual(['teach-any-move-fr-en-10']);
+    expect(defaultRunnableSchemas([v10, v11], fireRed11).map((s) => s.id)).toEqual(['teach-any-move-fr-en-11']);
   });
 });

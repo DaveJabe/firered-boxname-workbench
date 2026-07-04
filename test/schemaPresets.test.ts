@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { findMatchingPreset, applyPreset, type CuratedSchemaPreset } from '../src/core/schemaPresets.js';
+import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 
 // A harmless, invented toy preset — no real script, item ID, address,
 // offset, route step, opcode, payload byte, or generated output.
@@ -12,6 +13,7 @@ function makeToyPreset(over: Partial<CuratedSchemaPreset> = {}): CuratedSchemaPr
       id: 'toy-preset-schema',
       label: 'Toy preset schema',
       description: 'A toy-only demo schema.',
+      target: UNKNOWN_TARGET,
       supportedRevisionLabels: [],
       fields: [{ key: 'exampleValue', label: 'Example value', type: 'text', required: false, variableName: 'exampleValue' }],
     },

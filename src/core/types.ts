@@ -353,6 +353,38 @@ export interface DraftActionSchema {
   isDraft: true;
 }
 
+// --- Game-target compatibility model -----------------------------------------
+//
+// A GameTarget records which game/language/revision a script or curated
+// schema was written for — informational/filtering metadata only. Nothing
+// here invokes a generator, reads a ROM/save, or verifies compatibility
+// against real game data; "compatible" only ever means "the recorded
+// metadata matches." See core/gameTarget.ts for the enum lists and pure
+// label/match/compatibility/sort helpers. "Unknown" is a first-class, valid
+// value everywhere — existing scripts/schemas/packs that predate this model
+// migrate to it, never silently to a guessed real value.
+
+export type TargetGame = 'FireRed' | 'LeafGreen' | 'Unknown';
+export type TargetLanguage =
+  | 'English'
+  | 'Japanese'
+  | 'Spanish'
+  | 'French'
+  | 'German'
+  | 'Italian'
+  | 'Korean'
+  | 'Unknown';
+export type TargetRevision = '1.0' | '1.1' | 'Unknown';
+
+export interface GameTarget {
+  game: TargetGame;
+  language: TargetLanguage;
+  revision: TargetRevision;
+  /** Optional free-text region label (documentation only, e.g. "PAL"). */
+  regionLabel?: string;
+  notes?: string;
+}
+
 /** A locally-imported `.txt` action script, kept for inspection only. */
 export interface ScriptFile {
   id: string;
@@ -367,6 +399,8 @@ export interface ScriptFile {
   relativePath?: string;
   /** Id of the ScriptPack this script was imported as part of, if any. */
   packId?: string;
+  /** Overrides the owning pack's defaultTarget for this specific script, if set. See GameTarget below. */
+  targetOverride?: GameTarget;
 }
 
 // --- Script packs (batch "import script folder") ----------------------------
@@ -381,6 +415,9 @@ export interface ScriptPack {
   name: string;
   importedAt: string;
   sourceFolderName?: string;
+  /** Default target for scripts in this pack, unless a script sets its own targetOverride. See GameTarget below. */
+  defaultTarget: GameTarget;
+  targetNotes?: string;
   /** Ids into Project.scripts for the scripts imported as part of this pack. */
   scriptIds: readonly string[];
 }
@@ -429,9 +466,13 @@ export interface CuratedActionSchema {
   id: string;
   label: string;
   description: string;
+  /** Stable action concept shared across target-specific variants (e.g. "teach-any-move"). Distinct from `id`, which stays unique per variant. */
+  actionKey?: string;
+  /** Which game/language/revision this specific schema variant targets. Unknown/Mixed until the user sets it. */
+  target: GameTarget;
   scriptId?: string;
   scriptFilename?: string;
-  /** Empty = supports any revision. */
+  /** Empty = supports any revision. Free-text label matching, distinct from and predates the structured `target` field above. */
   supportedRevisionLabels: readonly string[];
   fields: readonly CuratedSchemaField[];
   status: CuratedSchemaStatus;

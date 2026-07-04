@@ -5,6 +5,7 @@
 // addresses, opcodes, payload bytes, or generated output.
 
 import type { CuratedSchemaPreset } from '../core/schemaPresets.js';
+import { UNKNOWN_TARGET } from '../core/gameTarget.js';
 
 export const SCHEMA_PRESETS: readonly CuratedSchemaPreset[] = [
   {
@@ -15,6 +16,7 @@ export const SCHEMA_PRESETS: readonly CuratedSchemaPreset[] = [
       id: 'toy-demo-schema',
       label: 'Toy demo schema',
       description: 'A demo-only preset that shows how schema suggestions work. Not tied to any real script or generator.',
+      target: UNKNOWN_TARGET,
       supportedRevisionLabels: [],
       fields: [
         {

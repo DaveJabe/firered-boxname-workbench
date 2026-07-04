@@ -8,7 +8,8 @@
 // it as JSON for informational display; its content is never executed or
 // fed back into scanning/filling.
 
-import type { CuratedActionSchema, ScriptFile, VariableCandidate } from './types.js';
+import type { CuratedActionSchema, GameTarget, ScriptFile, ScriptPack, VariableCandidate } from './types.js';
+import { UNKNOWN_TARGET } from './gameTarget.js';
 
 // --- Collecting a folder selection into scripts + optional metadata --------
 
@@ -107,6 +108,15 @@ export function detectSourceFolderName(files: readonly CollectedFile[]): string 
   return nested ? normalizePath(nested.relativePath).split('/')[0] : undefined;
 }
 
+/**
+ * The target that actually applies to a script: its own override if set,
+ * else its pack's default target, else Unknown/Mixed (no pack, no override).
+ * Never guesses a real value — only ever what was explicitly recorded.
+ */
+export function effectiveScriptTarget(script: ScriptFile, pack: ScriptPack | undefined): GameTarget {
+  return script.targetOverride ?? pack?.defaultTarget ?? UNKNOWN_TARGET;
+}
+
 // --- Batch scan summary ------------------------------------------------------
 
 export interface BatchScanSummary {
@@ -146,13 +156,16 @@ export interface ScriptPackRow {
   userFacingCandidateCount: number;
   internalCandidateCount: number;
   hasSchema: boolean;
+  target: GameTarget;
 }
 
 /** One summary row per script, for the Manage Scripts table — never scans or fills anything itself. */
 export function buildScriptPackRows(
   scripts: readonly ScriptFile[],
   curatedSchemas: readonly CuratedActionSchema[],
+  packs: readonly ScriptPack[] = [],
 ): ScriptPackRow[] {
+  const packsById = new Map(packs.map((p) => [p.id, p]));
   return scripts.map((s) => {
     const candidates = candidatesOf(s);
     const row: ScriptPackRow = {
@@ -162,6 +175,7 @@ export function buildScriptPackRows(
       userFacingCandidateCount: candidates.filter((c) => !c.internal).length,
       internalCandidateCount: candidates.filter((c) => c.internal).length,
       hasSchema: curatedSchemas.some((cs) => cs.scriptId === s.id),
+      target: effectiveScriptTarget(s, s.packId ? packsById.get(s.packId) : undefined),
     };
     if (s.relativePath) row.relativePath = s.relativePath;
     if (s.lastScan?.title) row.title = s.lastScan.title;

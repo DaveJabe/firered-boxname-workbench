@@ -16,6 +16,7 @@ import type {
   VariableCandidate,
 } from './types.js';
 import { isBlank } from './normalize.js';
+import { isUnknownTarget } from './gameTarget.js';
 
 const STATUSES: readonly CuratedSchemaStatus[] = ['draft', 'reviewed', 'disabled'];
 
@@ -152,6 +153,9 @@ export function validateDraftSchema(draft: CuratedActionSchema, project: Project
   if (!STATUSES.includes(draft.status)) errors.push('Status must be draft, reviewed, or disabled.');
   if (draft.scriptId && !project.scripts.some((s) => s.id === draft.scriptId)) {
     errors.push('Linked script was not found in this workspace.');
+  }
+  if (draft.status === 'reviewed' && isUnknownTarget(draft.target)) {
+    errors.push('Reviewed schemas need an explicit game/language/revision target — Unknown/Mixed is only allowed for draft schemas.');
   }
 
   const keyCounts = new Map<string, number>();

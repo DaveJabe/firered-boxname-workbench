@@ -45,8 +45,6 @@ nav.rail button {
 }
 nav.rail button:hover { background: #eef1f5; }
 nav.rail button.active { background: #e7ecf3; font-weight: 600; }
-nav.rail .rail-divider { border: none; border-top: 1px solid var(--line); margin: 0.75rem 0.5rem 0.25rem; }
-nav.rail .rail-section-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0.6rem 0.25rem; }
 
 main { flex: 1; padding: 1.25rem 1.5rem; max-width: 900px; }
 

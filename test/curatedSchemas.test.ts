@@ -178,7 +178,7 @@ describe('attaching a curated schema to a script', () => {
   });
 });
 
-describe('curated schema appears in and drives the Action Builder (mock mode only)', () => {
+describe('curated schema appears in and drives Run Script (mock mode only)', () => {
   it('is selectable when reviewed or draft, and excluded when disabled', () => {
     const reviewed = makeCuratedSchema({ id: 'a', status: 'reviewed' });
     const draft = makeCuratedSchema({ id: 'b', status: 'draft' });
@@ -186,6 +186,17 @@ describe('curated schema appears in and drives the Action Builder (mock mode onl
     expect(isSchemaSelectable(reviewed)).toBe(true);
     expect(isSchemaSelectable(draft)).toBe(true);
     expect(isSchemaSelectable(disabled)).toBe(false);
+  });
+
+  it('filters a mixed project.curatedSchemas list down to exactly the runnable ones for the Run Script dropdown', () => {
+    const schemas = [
+      makeCuratedSchema({ id: 'teach-any-move', label: 'Teach Pokémon Any Move', status: 'reviewed' }),
+      makeCuratedSchema({ id: 'work-in-progress', label: 'Work in progress schema', status: 'draft' }),
+      makeCuratedSchema({ id: 'retired', label: 'Retired schema', status: 'disabled' }),
+    ];
+    const dropdownOptions = schemas.filter(isSchemaSelectable);
+    expect(dropdownOptions.map((s) => s.id)).toEqual(['teach-any-move', 'work-in-progress']);
+    expect(dropdownOptions.some((s) => s.id === 'retired')).toBe(false);
   });
 
   it('resolves the preferred schema id when selectable, falling back to the first selectable one', () => {

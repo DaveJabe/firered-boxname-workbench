@@ -15,51 +15,62 @@ export type Screen =
   | 'report'
   | 'settings'
   | 'checklist'
-  | 'notes';
+  | 'notes'
+  | 'advanced';
 
 export const SCREEN_LABEL: Record<Screen, string> = {
   landing: 'FireRed BoxName Workbench',
   'start-here': 'Start',
-  actions: 'Action Builder',
-  scripts: 'Scripts',
+  actions: 'Run Script',
+  scripts: 'Manage Scripts',
   outputs: 'Outputs',
   validation: 'Validation',
   report: 'Export',
-  settings: 'Settings',
+  settings: 'Workspace Settings',
   checklist: 'Checklist',
   notes: 'Notes',
+  advanced: 'Advanced',
 };
 
 /**
- * Sidebar tab order for an open workspace: the primary tool loop first
- * (Start, Action Builder, Scripts, Outputs, Export, Settings), then the
- * lower-priority notebook-era screens (Validation, Checklist, Notes) below
- * a visual "Advanced" separator — see ADVANCED_SCREENS.
+ * Top-level sidebar tabs — the simple tool loop only: select a script/action
+ * and run it (Run Script), see what's been saved (Outputs), manage local
+ * scripts and curated schemas (Manage Scripts), and everything else
+ * (Advanced). Workspace/project management, settings, validation, the
+ * report, checklist, and notes all live behind Advanced — see
+ * ADVANCED_SCREENS and sidebarActiveScreen.
  */
-export const SIDEBAR_SCREENS: readonly Screen[] = [
+export const SIDEBAR_SCREENS: readonly Screen[] = ['actions', 'outputs', 'scripts', 'advanced'];
+
+/**
+ * Screens reachable only through the Advanced hub, not as their own sidebar
+ * tab. `sidebarActiveScreen` maps all of these back to 'advanced' so the
+ * Advanced tab stays highlighted while browsing any of them.
+ */
+export const ADVANCED_SCREENS: readonly Screen[] = [
   'start-here',
-  'actions',
-  'scripts',
-  'outputs',
-  'report',
   'settings',
   'validation',
+  'report',
   'checklist',
   'notes',
+  'landing',
 ];
 
-/** Lower-priority screens shown below a visual separator in the sidebar. */
-export const ADVANCED_SCREENS: readonly Screen[] = ['validation', 'checklist', 'notes'];
+/** Which top-level sidebar tab should render as active for the given screen. */
+export function sidebarActiveScreen(screen: Screen): Screen {
+  return ADVANCED_SCREENS.includes(screen) ? 'advanced' : screen;
+}
 
 /** How a workspace came to be open, for choosing its default screen. */
 export type WorkspaceOrigin = 'created' | 'demo' | 'import-script' | 'opened';
 
 /**
  * Which screen a workspace should open to, based on how the user got there.
- * Demo workspaces land on Start (orientation); a workspace created via
- * "Import a script" lands directly in Scripts; everything else — a freshly
- * created workspace, or opening an existing one — lands in the Action
- * Builder, the app's primary hub.
+ * Demo workspaces land on the Advanced-only orientation screen; a workspace
+ * created via "Import a script" lands directly in Manage Scripts; everything
+ * else — a freshly created workspace, or opening an existing one — lands in
+ * Run Script, the app's primary hub.
  */
 export function defaultScreenForWorkspace(origin: WorkspaceOrigin): Screen {
   switch (origin) {
@@ -89,8 +100,11 @@ export function findReusableUntitledWorkspace(
 }
 
 /**
- * The single most recently updated workspace, for the landing screen's
- * compact view. Assumes `summaries` is already most-recently-updated-first.
+ * The single most recently updated workspace. Used both for the landing
+ * screen's compact view and to silently reopen where the user left off on
+ * app launch (see openDefaultWorkspace in app.ts) — the user should never
+ * have to pick or configure a workspace before using the tool. Assumes
+ * `summaries` is already most-recently-updated-first, matching listProjects().
  */
 export function mostRecentWorkspace(summaries: readonly ProjectSummary[]): ProjectSummary | undefined {
   return summaries[0];

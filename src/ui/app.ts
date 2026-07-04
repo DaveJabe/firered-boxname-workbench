@@ -8,6 +8,9 @@ import type {
   ActionFieldValue,
   ActionInput,
   MockGeneratedOutput,
+  ScriptFile,
+  ScriptScanResult,
+  DraftActionSchema,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -21,6 +24,7 @@ import { ACTION_TEMPLATES, getActionTemplate, type ActionField } from '../templa
 import { defaultActionValues, coerceActionFieldValue, missingRequiredActionFields } from '../core/actionInput.js';
 import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
 import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
+import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -29,15 +33,17 @@ import {
   deleteProject,
   exportProjectJson,
   importProjectJson,
+  exportDraftActionSchemaJson,
+  importCuratedActionSchemaJson,
   type ProjectSummary,
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
 
-type Screen = 'projects' | 'new' | 'metadata' | 'actions' | 'checklist' | 'notes' | 'imports' | 'validation' | 'report';
+type Screen = 'projects' | 'new' | 'metadata' | 'actions' | 'scripts' | 'checklist' | 'notes' | 'imports' | 'validation' | 'report';
 
 const SCREEN_LABEL: Record<Screen, string> = {
-  projects: 'All projects', new: 'New project', metadata: 'Metadata', actions: 'Action Builder', checklist: 'Checklist',
-  notes: 'Notes', imports: 'Imported text', validation: 'Validation', report: 'Report',
+  projects: 'All projects', new: 'New project', metadata: 'Metadata', actions: 'Action Builder', scripts: 'Script Library',
+  checklist: 'Checklist', notes: 'Notes', imports: 'Imported text', validation: 'Validation', report: 'Report',
 };
 
 interface ActionBuilderState {
@@ -124,8 +130,8 @@ function opt(value: string, label: string, current: string): string {
 function navRail(): string {
   if (!state.project) return '';
   const screens: [Screen, string][] = [
-    ['metadata', 'Metadata'], ['actions', 'Action Builder'], ['checklist', 'Checklist'], ['notes', 'Notes'],
-    ['imports', 'Imported text'], ['validation', 'Validation'], ['report', 'Report'],
+    ['metadata', 'Metadata'], ['actions', 'Action Builder'], ['scripts', 'Script Library'], ['checklist', 'Checklist'],
+    ['notes', 'Notes'], ['imports', 'Imported text'], ['validation', 'Validation'], ['report', 'Report'],
   ];
   const items = screens
     .map(([s, label]) => {
@@ -170,6 +176,7 @@ function render(): void {
     case 'new': content = renderNew(); break;
     case 'metadata': content = renderMetadata(); break;
     case 'actions': content = renderActions(); break;
+    case 'scripts': content = renderScripts(); break;
     case 'checklist': content = renderChecklist(); break;
     case 'notes': content = renderNotes(); break;
     case 'imports': content = renderImports(); break;
@@ -368,6 +375,93 @@ function renderActions(): string {
       </div>
     </div>
     ${sheetHtml}`;
+}
+
+// --- Script Library (developer-only, informational) -------------------------
+
+function candidateRow(c: ScriptScanResult['candidates'][number]): string {
+  const confBadge = c.confidence === 'high' ? 'info' : c.confidence === 'medium' ? 'warning' : 'error';
+  return `<tr>
+    <td>${escapeHtml(c.name)}</td>
+    <td><code>${escapeHtml(c.rawValue)}</code></td>
+    <td>${c.nearbyComment ? escapeHtml(c.nearbyComment) : '—'}</td>
+    <td>${c.annotation ? escapeHtml(c.annotation) : '—'}</td>
+    <td>${escapeHtml(c.inferredType)}</td>
+    <td><span class="badge ${confBadge}">${escapeHtml(c.confidence)}</span></td>
+  </tr>`;
+}
+
+function draftSchemaList(schema: DraftActionSchema): string {
+  const items = schema.fields
+    .map(
+      (f) => `<li><strong>${escapeHtml(f.label)}</strong> — ${escapeHtml(f.inferredType)} (${escapeHtml(f.confidence)})${f.notes ? ' · ' + escapeHtml(f.notes) : ''}</li>`,
+    )
+    .join('');
+  return `<ul>${items || '<li class="muted">No candidate fields to draft.</li>'}</ul>`;
+}
+
+function renderCuratedSchema(schema: DraftActionSchema): string {
+  return `<div class="card ext-tool">
+    <p class="muted"><strong>Curated schema imported</strong> ${escapeHtml(schema.generatedAt)} — still informational only; not connected to any action template or generator.</p>
+    ${draftSchemaList(schema)}
+  </div>`;
+}
+
+function renderScanResult(script: ScriptFile, scan: ScriptScanResult): string {
+  const header = scan.sections.find((s) => s.kind === 'header');
+  const body = scan.sections.find((s) => s.kind === 'body');
+  const rows = scan.candidates.map(candidateRow).join('');
+  const schema = buildDraftActionSchema(script, scan, nowIso);
+  return `<div class="card" style="border-color:#e0a458;background:#fffaf2">
+    <p class="muted">Scanned ${escapeHtml(scan.scannedAt)} · marker line: ${scan.markerLine ?? 'not found'}</p>
+    <p class="muted">Header: ${header ? numberLines(header.text).length : 0} line(s) · Body: ${body ? numberLines(body.text).length : 0} line(s)</p>
+    ${scan.candidates.length
+      ? `<table><thead><tr><th>Name</th><th>Value</th><th>Nearby comment</th><th>Annotation</th><th>Inferred type</th><th>Confidence</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<div class="empty">No candidate variables found before the @@ marker.</div>'}
+    <h3>Draft action schema</h3>
+    <p class="badge warning" style="display:inline-block">Scanner output is a draft. Review manually before creating an action template.</p>
+    ${draftSchemaList(schema)}
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn small" data-action="export-draft-schema" data-id="${attr(script.id)}">Export draft schema (.json)</button>
+      <button class="btn small" data-action="import-curated-schema" data-id="${attr(script.id)}">Import curated schema (.json)</button>
+      <input type="file" accept="application/json" data-action="curated-schema-file" data-id="${attr(script.id)}" id="curated-schema-input-${attr(script.id)}" style="display:none" aria-label="Import curated action schema JSON" />
+    </div>
+    ${script.curatedSchema ? renderCuratedSchema(script.curatedSchema) : ''}
+  </div>`;
+}
+
+function renderScriptCard(s: ScriptFile): string {
+  const lineCount = numberLines(s.rawText).length;
+  return `<div class="card" data-ref="${attr(s.id)}">
+    <div class="row" style="justify-content:space-between">
+      <div class="row">
+        <strong>${escapeHtml(s.filename)}</strong>
+        <span class="muted">${lineCount} line${lineCount === 1 ? '' : 's'} · imported ${escapeHtml(s.importedAt)}</span>
+      </div>
+      <div class="row">
+        <button class="btn small" data-action="run-scan" data-id="${attr(s.id)}">Run scanner</button>
+        <button class="btn danger small" data-action="remove-script" data-id="${attr(s.id)}" aria-label="Delete script">Delete</button>
+      </div>
+    </div>
+    <label>Notes</label>
+    <input type="text" data-bind="script.notes" data-id="${attr(s.id)}" value="${attr(s.notes ?? '')}" placeholder="Optional notes about this script" aria-label="Script notes" />
+    <label>Script text (read-only, stored verbatim)</label>
+    ${lineNumberView(s.rawText)}
+    ${s.lastScan ? renderScanResult(s, s.lastScan) : ''}
+  </div>`;
+}
+
+function renderScripts(): string {
+  const p = state.project!;
+  const scripts = p.scripts.map(renderScriptCard).join('');
+  return `<h1>Script Library <span class="pill">developer-only, informational</span></h1>
+    <p class="muted">Import local .txt action scripts to inspect them as plain text. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
+    ${scripts || '<div class="empty">No scripts imported yet.</div>'}
+    <div class="card">
+      <h3>Import a script</h3>
+      <button class="btn" data-action="import-script">Import script (.txt)</button>
+      <input type="file" accept=".txt,text/plain" data-action="script-file" id="script-file-input" style="display:none" aria-label="Import script file" />
+    </div>`;
 }
 
 function stateSelect(item: ChecklistItem): string {
@@ -861,6 +955,35 @@ async function handleClick(e: Event): Promise<void> {
       commit();
       break;
     }
+    case 'import-script':
+      (document.getElementById('script-file-input') as HTMLInputElement | null)?.click();
+      break;
+    case 'remove-script':
+      if (p && id) {
+        p.scripts = p.scripts.filter((s) => s.id !== id);
+        commit();
+      }
+      break;
+    case 'run-scan': {
+      if (!p || !id) break;
+      const script = p.scripts.find((s) => s.id === id);
+      if (!script) break;
+      script.lastScan = scanScript(script, nowIso);
+      commit();
+      break;
+    }
+    case 'export-draft-schema': {
+      if (!p || !id) break;
+      const script = p.scripts.find((s) => s.id === id);
+      if (!script || !script.lastScan) break;
+      const schema = buildDraftActionSchema(script, script.lastScan, nowIso);
+      const base = script.filename.replace(/\.txt$/i, '') || 'script';
+      downloadText(`${base}-draft-schema.json`, exportDraftActionSchemaJson(schema), 'application/json');
+      break;
+    }
+    case 'import-curated-schema':
+      if (id) (document.getElementById(`curated-schema-input-${id}`) as HTMLInputElement | null)?.click();
+      break;
     case 'add-checklist': {
       if (!p) break;
       const prompt = readVal('ci-prompt').trim();
@@ -961,6 +1084,14 @@ async function handleChange(e: Event): Promise<void> {
     await handleBlockFile(t as HTMLInputElement);
     return;
   }
+  if (action === 'script-file') {
+    await handleScriptFile(t as HTMLInputElement);
+    return;
+  }
+  if (action === 'curated-schema-file') {
+    await handleCuratedSchemaFile(t as HTMLInputElement);
+    return;
+  }
   const bind = t.dataset.bind;
   if (!bind) return;
   const id = t.dataset.id;
@@ -1030,6 +1161,7 @@ function applyBinding(bind: string, id: string | undefined, value: string, check
       if (n) n.body = value;
       break;
     }
+    case 'script.notes': setScript(id, (s) => (s.notes = value)); break;
     case 'block.title': setBlock(id, (b) => (b.title = value)); break;
     case 'block.categoryLabel': setBlock(id, (b) => (b.categoryLabel = value)); break;
     case 'block.revisionLabel': setBlock(id, (b) => (b.revisionLabel = value)); break;
@@ -1063,6 +1195,11 @@ function applyBinding(bind: string, id: string | undefined, value: string, check
 function setBlock(id: string | undefined, fn: (b: ImportedTextBlock) => void): void {
   const b = state.project?.importedBlocks.find((x) => x.id === id);
   if (b) fn(b);
+}
+
+function setScript(id: string | undefined, fn: (s: ScriptFile) => void): void {
+  const s = state.project?.scripts.find((x) => x.id === id);
+  if (s) fn(s);
 }
 
 function parseOptInt(value: string): number | undefined {
@@ -1103,6 +1240,36 @@ async function handleBlockFile(input: HTMLInputElement): Promise<void> {
     source: { type: 'file-import', label: file.name, importedAt: now, filename: file.name, schemaVersion: SOURCE_SCHEMA_VERSION },
   });
   commit();
+}
+
+async function handleScriptFile(input: HTMLInputElement): Promise<void> {
+  const file = input.files?.[0];
+  input.value = '';
+  const p = state.project;
+  if (!file || !p) return;
+  const text = await readFileText(file);
+  const script: ScriptFile = { id: uid(), filename: file.name, rawText: text, importedAt: nowIso() };
+  p.scripts.push(script);
+  commit();
+}
+
+async function handleCuratedSchemaFile(input: HTMLInputElement): Promise<void> {
+  const file = input.files?.[0];
+  const scriptId = input.dataset.id;
+  input.value = '';
+  const p = state.project;
+  if (!file || !p || !scriptId) return;
+  try {
+    const text = await readFileText(file);
+    const schema = importCuratedActionSchemaJson(text);
+    const script = p.scripts.find((s) => s.id === scriptId);
+    if (script) {
+      script.curatedSchema = schema;
+      commit();
+    }
+  } catch (err) {
+    window.alert(`Curated schema import failed: ${(err as Error).message}`);
+  }
 }
 
 export async function init(): Promise<void> {

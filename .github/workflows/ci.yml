@@ -1,0 +1,45 @@
+# Continuous integration for the FireRed Research Notebook.
+#
+# This workflow needs NO secrets, tokens, or credentials. The only network
+# access is npm's normal dependency download during `npm ci`; every other step
+# runs offline against the local checkout. `npm run audit:network` additionally
+# fails the build if any network primitive appears in src/.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: read-only checkout, nothing else.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: No-network audit
+        run: npm run audit:network
+
+      - name: Build
+        run: npm run build

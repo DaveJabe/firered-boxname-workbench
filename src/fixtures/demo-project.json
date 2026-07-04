@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "demo-project",
+  "metadata": {
+    "schemaVersion": 1,
+    "game": "FireRed",
+    "revisionLabel": "Rev A (placeholder)",
+    "languageLabel": "English (placeholder)",
+    "projectTitle": "Sample documentation project",
+    "mode": "documentation",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z"
+  },
+  "checklist": [
+    { "id": "demo-c1", "templateKey": "meta-revision", "prompt": "Revision label is recorded and matches the source material.", "category": "Metadata", "state": "confirmed", "note": "Placeholder: label recorded.", "required": true },
+    { "id": "demo-c2", "templateKey": "meta-language", "prompt": "Language label is recorded.", "category": "Metadata", "state": "confirmed", "note": "", "required": false },
+    { "id": "demo-c3", "templateKey": "src-titles", "prompt": "Every imported text block has a descriptive title.", "category": "Sources", "state": "needs-follow-up", "note": "Placeholder: second block title could be clearer.", "required": true },
+    { "id": "demo-c4", "templateKey": "assume-written", "prompt": "Setup assumptions are written down in plain language.", "category": "Assumptions", "state": "unchecked", "note": "", "required": true },
+    { "id": "demo-c5", "templateKey": "fmt-validated", "prompt": "Formatting validation has been run and findings reviewed.", "category": "Formatting", "state": "unchecked", "note": "", "required": false },
+    { "id": "demo-c6", "templateKey": "review-second", "prompt": "A second reviewer has read the notes (or this is explicitly a solo review).", "category": "Review", "state": "not-applicable", "note": "Placeholder: solo review.", "required": false }
+  ],
+  "notes": [
+    { "id": "demo-n1", "sectionTitle": "Overview", "body": "This is a harmless sample project used to demonstrate the interface. All text here is placeholder content.", "order": 0 },
+    { "id": "demo-n2", "sectionTitle": "Assumptions", "body": "Placeholder assumption one.\nPlaceholder assumption two.\nOpen question: placeholder.", "order": 1 }
+  ],
+  "importedBlocks": [
+    {
+      "id": "demo-b1",
+      "title": "Notes excerpt A",
+      "categoryLabel": "excerpt",
+      "revisionLabel": "Rev A (placeholder)",
+      "rawText": "Placeholder line one for review.\nPlaceholder line two, a bit longer than the first line here.\nPlaceholder line three.\n\nA blank line preceded this one.",
+      "notes": "Placeholder note about this block.",
+      "source": { "type": "demo-fixture", "label": "Demo fixture", "importedAt": "2026-01-01T00:00:00.000Z", "schemaVersion": 1 }
+    },
+    {
+      "id": "demo-b2",
+      "title": "excerpt b",
+      "categoryLabel": "excerpt",
+      "revisionLabel": "Rev A (placeholder)",
+      "rawText": "Sample text alpha\nSample text beta\nSample text gamma",
+      "notes": "",
+      "source": { "type": "demo-fixture", "label": "Demo fixture", "importedAt": "2026-01-01T00:00:00.000Z", "schemaVersion": 1 }
+    }
+  ],
+  "settings": {
+    "maxLineLength": 40,
+    "countMode": "codepoints"
+  },
+  "latestValidation": null,
+  "projectStatus": "in-review"
+}

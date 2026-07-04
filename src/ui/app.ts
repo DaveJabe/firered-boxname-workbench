@@ -8,6 +8,7 @@ import type {
   ActionFieldValue,
   ScriptFile,
   ScriptScanResult,
+  ScriptPack,
   VariableCandidate,
   DraftActionSchema,
   CuratedActionSchema,
@@ -31,6 +32,20 @@ import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, suppor
 import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../core/schemaBuilder.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
 import { parseGeneratorOutput, formatCompactBoxNames, formatRawBoxLines } from '../core/generatorOutputParser.js';
+import {
+  collectScriptPackFiles,
+  isRelevantPackFile,
+  detectSourceFolderName,
+  summarizeBatchScan,
+  buildScriptPackRows,
+  filterScriptRows,
+  searchScriptRows,
+  type CollectedFile,
+  type ScriptPackRow,
+  type ScriptLibraryFilter,
+} from '../core/scriptPack.js';
+import { findMatchingPreset, applyPreset } from '../core/schemaPresets.js';
+import { SCHEMA_PRESETS } from '../templates/schema-presets.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -253,6 +268,10 @@ const state: {
   schemaEditor: SchemaEditorState | null;
   /** Landing screen: whether the full workspace list is expanded (vs. just the most recent one). */
   manageWorkspacesOpen: boolean;
+  /** Manage Scripts: which script rows to show. */
+  scriptsFilter: ScriptLibraryFilter;
+  /** Manage Scripts: current search text (filename/title). */
+  scriptsSearch: string;
 } = {
   screen: 'actions',
   summaries: [],
@@ -265,6 +284,8 @@ const state: {
   actionBuilder: makeEmptyActionBuilderState(),
   schemaEditor: null,
   manageWorkspacesOpen: false,
+  scriptsFilter: 'all',
+  scriptsSearch: '',
 };
 
 const uid = () => crypto.randomUUID();
@@ -943,13 +964,24 @@ function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: P
   </div>`;
 }
 
+function presetSuggestionHtml(s: ScriptFile, project: Project): string {
+  const preset = findMatchingPreset(SCHEMA_PRESETS, { filename: s.filename, title: s.lastScan?.title });
+  if (!preset) return '';
+  const alreadyApplied = project.curatedSchemas.some((cs) => cs.id === `${preset.id}-for-${s.id}`);
+  if (alreadyApplied) return '';
+  return `<div class="badge info" style="display:block;margin:0.4rem 0">
+    Suggested schema available: ${escapeHtml(preset.label)}
+    <button class="btn small" data-action="apply-schema-preset" data-id="${attr(s.id)}" data-preset="${attr(preset.id)}">Apply preset (still needs review)</button>
+  </div>`;
+}
+
 function renderScriptCard(s: ScriptFile, project: Project): string {
   const lineCount = numberLines(s.rawText).length;
   return `<div class="card" data-ref="${attr(s.id)}">
     <div class="row" style="justify-content:space-between">
       <div class="row">
         <strong>${escapeHtml(s.filename)}</strong>
-        <span class="muted">${lineCount} line${lineCount === 1 ? '' : 's'} · imported ${escapeHtml(s.importedAt)}</span>
+        <span class="muted">${lineCount} line${lineCount === 1 ? '' : 's'}${s.relativePath ? ' · ' + escapeHtml(s.relativePath) : ''} · imported ${escapeHtml(s.importedAt)}</span>
       </div>
       <div class="row">
         <button class="btn small" data-action="run-scan" data-id="${attr(s.id)}">Run scanner</button>
@@ -958,28 +990,109 @@ function renderScriptCard(s: ScriptFile, project: Project): string {
     </div>
     <label>Notes</label>
     <input type="text" data-bind="script.notes" data-id="${attr(s.id)}" value="${attr(s.notes ?? '')}" placeholder="Optional notes about this script" aria-label="Script notes" />
+    ${presetSuggestionHtml(s, project)}
     <label>Script text (read-only, stored verbatim)</label>
     ${lineNumberView(s.rawText)}
     ${s.lastScan ? renderScanResult(s, s.lastScan, project) : ''}
   </div>`;
 }
 
+function batchScanSummaryCard(summary: ReturnType<typeof summarizeBatchScan>): string {
+  return `<div class="card summary" role="group" aria-label="Batch scan summary">
+    <div class="stat"><div class="num">${summary.totalScripts}</div><div class="lbl">Total scripts</div></div>
+    <div class="stat"><div class="num">${summary.scannedScripts}</div><div class="lbl">Scanned</div></div>
+    <div class="stat"><div class="num">${summary.scriptsWithUserFacingCandidates}</div><div class="lbl">With user-facing candidates</div></div>
+    <div class="stat"><div class="num">${summary.scriptsWithNoCandidates}</div><div class="lbl">No candidates</div></div>
+    <div class="stat"><div class="num">${summary.scriptsWithDirectives}</div><div class="lbl">With directives</div></div>
+    <div class="stat"><div class="num">${summary.scriptsWithInternalCandidates}</div><div class="lbl">With internal/helper candidates</div></div>
+  </div>`;
+}
+
+function scriptPackCard(pack: ScriptPack, scripts: readonly ScriptFile[]): string {
+  const packScripts = scripts.filter((s) => s.packId === pack.id);
+  const unscanned = packScripts.filter((s) => !s.lastScan).length;
+  return `<div class="card ext-tool">
+    <div class="row" style="justify-content:space-between">
+      <strong>${escapeHtml(pack.name)}</strong>
+      <span class="muted">${packScripts.length} script(s)${pack.sourceFolderName ? ' · from folder "' + escapeHtml(pack.sourceFolderName) + '"' : ''} · imported ${escapeHtml(pack.importedAt)}</span>
+    </div>
+    <button class="btn small" data-action="scan-all-in-pack" data-id="${attr(pack.id)}"${packScripts.length === 0 ? ' disabled' : ''}>${unscanned > 0 ? `Scan all scripts (${unscanned} unscanned)` : 'Re-scan all scripts'}</button>
+  </div>`;
+}
+
+function scriptLibraryFilterBar(): string {
+  const filters: [ScriptLibraryFilter, string][] = [
+    ['all', 'All'],
+    ['has-candidates', 'Has candidates'],
+    ['needs-schema', 'Needs schema'],
+    ['runnable', 'Runnable'],
+  ];
+  const chips = filters
+    .map(([v, l]) => {
+      const active = state.scriptsFilter === v;
+      return `<button class="chip${active ? ' active' : ''}" data-action="set-scripts-filter" data-filter="${v}" aria-pressed="${active}">${l}</button>`;
+    })
+    .join('');
+  return `<div class="row filters" role="group" aria-label="Filter scripts">${chips}</div>`;
+}
+
+function scriptSummaryTable(rows: ScriptPackRow[]): string {
+  if (rows.length === 0) return '<div class="empty">No scripts match this filter/search.</div>';
+  const trs = rows
+    .map(
+      (r) => `<tr>
+        <td>${escapeHtml(r.filename)}</td>
+        <td>${r.relativePath ? escapeHtml(r.relativePath) : '—'}</td>
+        <td>${r.title ? escapeHtml(r.title) : '—'}</td>
+        <td>${r.candidateCount}</td>
+        <td>${r.userFacingCandidateCount}</td>
+        <td>${r.internalCandidateCount}</td>
+        <td>${r.hasSchema ? 'Yes' : 'No'}</td>
+        <td><button class="btn small" data-action="open-script" data-id="${attr(r.scriptId)}">Open</button></td>
+      </tr>`,
+    )
+    .join('');
+  return `<table><thead><tr><th>Filename</th><th>Relative path</th><th>Title</th><th>Candidates</th><th>User-facing</th><th>Internal/helper</th><th>Schema attached</th><th></th></tr></thead><tbody>${trs}</tbody></table>`;
+}
+
 function renderScripts(): string {
   const p = state.project!;
-  const scripts = p.scripts.map((s) => renderScriptCard(s, p)).join('');
+  const allRows = buildScriptPackRows(p.scripts, p.curatedSchemas);
+  const filteredRows = searchScriptRows(filterScriptRows(allRows, state.scriptsFilter), state.scriptsSearch);
+  const visibleIds = new Set(filteredRows.map((r) => r.scriptId));
+  const visibleScripts = p.scripts.filter((s) => visibleIds.has(s.id));
+  const scriptCards = visibleScripts.map((s) => renderScriptCard(s, p)).join('');
+  const packCards = p.scriptPacks.map((pack) => scriptPackCard(pack, p.scripts)).join('');
+
   const emptyStateHtml = p.scripts.length === 0
     ? `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
-        <p class="muted">Import a local .txt script. The scanner reads it as plain text and helps you create a curated schema.</p>
+        <p class="muted">Import a local .txt script, or a whole folder of scripts. The scanner reads them as plain text and helps you create curated schemas.</p>
       </div>`
     : '';
+
+  const managementHtml = p.scripts.length > 0
+    ? `${batchScanSummaryCard(summarizeBatchScan(p.scripts))}
+      ${packCards}
+      ${scriptLibraryFilterBar()}
+      <input type="text" data-bind="scripts.search" value="${attr(state.scriptsSearch)}" placeholder="Search by filename or title" aria-label="Search scripts" style="margin:0.5rem 0" />
+      ${scriptSummaryTable(filteredRows)}`
+    : '';
+
+  const cardsHtml = scriptCards || (p.scripts.length > 0 ? '<div class="empty">No scripts match this filter/search.</div>' : '<div class="empty">No scripts imported yet.</div>');
+
   return `<h1>Manage Scripts <span class="pill">developer-only, informational</span></h1>
     <p class="muted">Import local .txt action scripts to inspect them as plain text. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
     ${emptyStateHtml}
-    ${scripts || '<div class="empty">No scripts imported yet.</div>'}
+    ${managementHtml}
+    ${cardsHtml}
     <div class="card">
-      <h3>Import a script</h3>
-      <button class="btn" data-action="import-script">Import script (.txt)</button>
+      <h3>Import scripts</h3>
+      <div class="row">
+        <button class="btn" data-action="import-script">Import script (.txt)</button>
+        <button class="btn" data-action="import-script-folder">Import script folder</button>
+      </div>
       <input type="file" accept=".txt,text/plain" data-action="script-file" id="script-file-input" style="display:none" aria-label="Import script file" />
+      <input type="file" webkitdirectory multiple data-action="script-folder-file" id="script-folder-input" style="display:none" aria-label="Import script folder" />
     </div>`;
 }
 
@@ -1297,6 +1410,8 @@ function resetViewState(project: Project): void {
   state.highlightRef = null;
   state.actionBuilder = makeActionBuilderState(project);
   state.schemaEditor = null;
+  state.scriptsFilter = 'all';
+  state.scriptsSearch = '';
 }
 
 /**
@@ -1585,9 +1700,13 @@ async function handleClick(e: Event): Promise<void> {
     case 'import-script':
       (document.getElementById('script-file-input') as HTMLInputElement | null)?.click();
       break;
+    case 'import-script-folder':
+      (document.getElementById('script-folder-input') as HTMLInputElement | null)?.click();
+      break;
     case 'remove-script':
       if (p && id) {
         p.scripts = p.scripts.filter((s) => s.id !== id);
+        for (const pack of p.scriptPacks) pack.scriptIds = pack.scriptIds.filter((sid) => sid !== id);
         commit();
       }
       break;
@@ -1596,6 +1715,34 @@ async function handleClick(e: Event): Promise<void> {
       const script = p.scripts.find((s) => s.id === id);
       if (!script) break;
       script.lastScan = scanScript(script, nowIso);
+      commit();
+      break;
+    }
+    case 'scan-all-in-pack': {
+      if (!p || !id) break;
+      for (const s of p.scripts.filter((s) => s.packId === id)) s.lastScan = scanScript(s, nowIso);
+      commit();
+      break;
+    }
+    case 'set-scripts-filter':
+      state.scriptsFilter = (el.dataset.filter as ScriptLibraryFilter) ?? 'all';
+      render();
+      break;
+    case 'open-script':
+      if (id) {
+        state.scriptsFilter = 'all';
+        state.scriptsSearch = '';
+        state.highlightRef = id;
+      }
+      render();
+      break;
+    case 'apply-schema-preset': {
+      if (!p || !id) break;
+      const presetId = el.dataset.preset;
+      const script = p.scripts.find((s) => s.id === id);
+      const preset = SCHEMA_PRESETS.find((pr) => pr.id === presetId);
+      if (!script || !preset) break;
+      upsertCuratedSchema(p.curatedSchemas, applyPreset(preset, script));
       commit();
       break;
     }
@@ -1750,6 +1897,10 @@ async function handleChange(e: Event): Promise<void> {
     await handleScriptFile(t as HTMLInputElement);
     return;
   }
+  if (action === 'script-folder-file') {
+    await handleScriptFolderFile(t as HTMLInputElement);
+    return;
+  }
   if (action === 'curated-schema-file') {
     await handleCuratedSchemaFile(t as HTMLInputElement);
     return;
@@ -1782,6 +1933,11 @@ async function handleChange(e: Event): Promise<void> {
   }
   if (bind.startsWith('schema.')) {
     applySchemaEditorBinding(bind, value);
+    render();
+    return;
+  }
+  if (bind === 'scripts.search') {
+    state.scriptsSearch = value;
     render();
     return;
   }
@@ -1953,6 +2109,57 @@ async function handleScriptFile(input: HTMLInputElement): Promise<void> {
   const text = await readFileText(file);
   const script: ScriptFile = { id: uid(), filename: file.name, rawText: text, importedAt: nowIso() };
   p.scripts.push(script);
+  commit();
+}
+
+/** Reads only .txt scripts and recognized metadata files (e.g. list.json) out
+ *  of a directory-picker selection — never fetched, never executed, no
+ *  particular folder layout required. */
+async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  const p = state.project;
+  if (!files.length || !p) return;
+
+  const collected: CollectedFile[] = [];
+  for (const file of files) {
+    const relativePath = file.webkitRelativePath || file.name;
+    if (!isRelevantPackFile(relativePath)) continue;
+    const text = await readFileText(file);
+    collected.push({ relativePath, text });
+  }
+
+  const { scripts } = collectScriptPackFiles(collected);
+  if (scripts.length === 0) {
+    window.alert('No .txt scripts found in that folder.');
+    return;
+  }
+
+  const now = nowIso();
+  const packId = uid();
+  const scriptIds: string[] = [];
+  for (const cs of scripts) {
+    const scriptId = uid();
+    scriptIds.push(scriptId);
+    const scriptFile: ScriptFile = {
+      id: scriptId,
+      filename: cs.filename,
+      rawText: cs.rawText,
+      importedAt: now,
+      relativePath: cs.relativePath,
+      packId,
+    };
+    p.scripts.push(scriptFile);
+  }
+  const sourceFolderName = detectSourceFolderName(collected);
+  const pack: ScriptPack = {
+    id: packId,
+    name: sourceFolderName ?? `Script pack (${now.slice(0, 10)})`,
+    importedAt: now,
+    scriptIds,
+  };
+  if (sourceFolderName) pack.sourceFolderName = sourceFolderName;
+  p.scriptPacks.push(pack);
   commit();
 }
 

@@ -14,6 +14,7 @@ import type {
   DraftActionSchema,
   CuratedActionSchema,
   CuratedSchemaField,
+  CuratedSchemaStatus,
   FilledScriptResult,
   ParsedGeneratorOutput,
 } from '../core/types.js';
@@ -30,7 +31,8 @@ import { defaultActionValues, coerceActionFieldValue, missingRequiredActionField
 import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
 import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
 import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
-import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision } from '../core/curatedSchemas.js';
+import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision, upsertCuratedSchema } from '../core/curatedSchemas.js';
+import { candidateToDraftField, validateDraftSchema } from '../core/schemaBuilder.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
 import { parseGeneratorOutput, formatCompactBoxNames, formatRawBoxLines } from '../core/generatorOutputParser.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
@@ -93,6 +95,124 @@ function makeActionBuilderState(revisionLabel: string): ActionBuilderState {
   };
 }
 
+// --- Curated schema builder (Script Library, seeded from a scan) -----------
+//
+// Lets the user turn selected scanner candidates into a CuratedActionSchema
+// by hand, without writing JSON. This only builds a CuratedActionSchema
+// object for Project.curatedSchemas — it never fills a script or invokes a
+// generator itself.
+
+interface SchemaEditorState {
+  scriptId: string;
+  id: string;
+  label: string;
+  description: string;
+  status: CuratedSchemaStatus;
+  /** Comma-separated for a single text input; parsed into an array on save. */
+  supportedRevisionLabels: string;
+  /** Candidate names (== initial variableName) currently included as fields. */
+  included: Set<string>;
+  /** Editable draft fields, keyed by the candidate name that seeded them. */
+  fields: Map<string, CuratedSchemaField>;
+  errors: string[];
+  savedSchemaId: string | null;
+}
+
+function openSchemaEditor(script: ScriptFile): void {
+  state.schemaEditor = {
+    scriptId: script.id,
+    id: script.filename.replace(/\.[^./]+$/, ''),
+    label: '',
+    description: '',
+    status: 'draft',
+    supportedRevisionLabels: '',
+    included: new Set(),
+    fields: new Map(),
+    errors: [],
+    savedSchemaId: null,
+  };
+}
+
+function toggleSchemaCandidate(candidateName: string, included: boolean): void {
+  const editor = state.schemaEditor;
+  const p = state.project;
+  if (!editor || !p) return;
+  if (included) {
+    if (!editor.fields.has(candidateName)) {
+      const script = p.scripts.find((s) => s.id === editor.scriptId);
+      const candidate = script?.lastScan?.candidates.find((c) => c.name === candidateName);
+      if (candidate) editor.fields.set(candidateName, candidateToDraftField(candidate));
+    }
+    editor.included.add(candidateName);
+  } else {
+    editor.included.delete(candidateName);
+    editor.fields.delete(candidateName);
+  }
+}
+
+function buildDraftSchemaFromEditor(editor: SchemaEditorState, script: ScriptFile): CuratedActionSchema {
+  const fields = Array.from(editor.included)
+    .map((name) => editor.fields.get(name))
+    .filter((f): f is CuratedSchemaField => Boolean(f));
+  const schema: CuratedActionSchema = {
+    id: editor.id.trim(),
+    label: editor.label.trim(),
+    description: editor.description.trim(),
+    scriptId: script.id,
+    scriptFilename: script.filename,
+    supportedRevisionLabels: editor.supportedRevisionLabels.split(',').map((s) => s.trim()).filter(Boolean),
+    fields,
+    status: editor.status,
+  };
+  return schema;
+}
+
+function applySchemaEditorBinding(bind: string, value: string): void {
+  const editor = state.schemaEditor;
+  if (!editor) return;
+  switch (bind) {
+    case 'schema.id': editor.id = value; break;
+    case 'schema.label': editor.label = value; break;
+    case 'schema.description': editor.description = value; break;
+    case 'schema.status': editor.status = value as CuratedSchemaStatus; break;
+    case 'schema.supportedRevisionLabels': editor.supportedRevisionLabels = value; break;
+  }
+}
+
+function applySchemaFieldBinding(bind: string, candidateKey: string | undefined, value: string, checked: boolean | undefined): void {
+  const editor = state.schemaEditor;
+  if (!editor || !candidateKey) return;
+  const field = editor.fields.get(candidateKey);
+  if (!field) return;
+  switch (bind) {
+    case 'schema-field.key': field.key = value; break;
+    case 'schema-field.label': field.label = value; break;
+    case 'schema-field.type': field.type = value as CuratedSchemaField['type']; break;
+    case 'schema-field.required': field.required = checked ?? false; break;
+    case 'schema-field.helpText': field.helpText = value || undefined; break;
+    case 'schema-field.warningsText': {
+      const lines = value.split('\n').map((l) => l.trim()).filter(Boolean);
+      field.warnings = lines.length ? lines : undefined;
+      break;
+    }
+    case 'schema-field.optionsText': {
+      const options = value
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [v, l] = line.split('|').map((s) => s.trim());
+          return { value: v, label: l || v };
+        });
+      field.options = options.length ? options : undefined;
+      break;
+    }
+    case 'schema-field.defaultValue':
+      field.defaultValue = coerceActionFieldValue(field, value, checked);
+      break;
+  }
+}
+
 /** Resolve the Action Builder's currently-selected field source to a common
  *  ActionTemplate shape, whichever it came from. `curatedUnavailable` is true
  *  only when curated mode is selected but no selectable schema exists — in
@@ -120,6 +240,7 @@ const state: {
   blockEdit: Set<string>;
   highlightRef: string | null;
   actionBuilder: ActionBuilderState;
+  schemaEditor: SchemaEditorState | null;
 } = {
   screen: 'landing',
   summaries: [],
@@ -130,6 +251,7 @@ const state: {
   blockEdit: new Set(),
   highlightRef: null,
   actionBuilder: makeActionBuilderState(''),
+  schemaEditor: null,
 };
 
 const uid = () => crypto.randomUUID();
@@ -608,6 +730,136 @@ function renderCuratedSchemaCard(schema: CuratedActionSchema, candidates: readon
   </div>`;
 }
 
+function schemaCandidateRow(c: VariableCandidate, editor: SchemaEditorState): string {
+  const included = editor.included.has(c.name);
+  const confBadge = c.confidence === 'high' ? 'info' : c.confidence === 'medium' ? 'warning' : 'error';
+  return `<tr>
+    <td><input type="checkbox" data-bind="schema-candidate.include" data-id="${attr(c.name)}"${included ? ' checked' : ''} aria-label="Include ${attr(c.name)} in schema" /></td>
+    <td>${escapeHtml(c.name)}</td>
+    <td><code>${escapeHtml(c.rawValue)}</code></td>
+    <td>${escapeHtml(c.inferredType)}</td>
+    <td><span class="badge ${confBadge}">${escapeHtml(c.confidence)}</span></td>
+    <td>${c.nearbyComment ? escapeHtml(c.nearbyComment) : '—'}</td>
+    <td>${c.annotation ? escapeHtml(c.annotation) : '—'}</td>
+  </tr>`;
+}
+
+function schemaFieldEditor(candidateName: string, field: CuratedSchemaField): string {
+  const idAttr = attr(candidateName);
+  const optionsText = (field.options ?? []).map((o) => `${o.value} | ${o.label}`).join('\n');
+  const warningsText = (field.warnings ?? []).join('\n');
+  const typeOpts = (['text', 'number', 'select', 'checkbox'] as const)
+    .map((t) => opt(t, cap(t), field.type))
+    .join('');
+  return `<div class="card ext-tool">
+    <div class="row" style="justify-content:space-between">
+      <strong>${escapeHtml(field.label || field.key)}</strong>
+      <span class="muted">maps to script variable <code>${escapeHtml(field.variableName)}</code></span>
+    </div>
+    <div class="grid2">
+      <div><label>Field key</label><input type="text" data-bind="schema-field.key" data-id="${idAttr}" value="${attr(field.key)}" /></div>
+      <div><label>Label</label><input type="text" data-bind="schema-field.label" data-id="${idAttr}" value="${attr(field.label)}" /></div>
+    </div>
+    <div class="grid2">
+      <div><label>Type</label><select data-bind="schema-field.type" data-id="${idAttr}">${typeOpts}</select></div>
+      <div><label class="row" style="margin-top:1.4rem"><input type="checkbox" data-bind="schema-field.required" data-id="${idAttr}" style="width:auto"${field.required ? ' checked' : ''} /> &nbsp;Required</label></div>
+    </div>
+    <label>Help text</label>
+    <input type="text" data-bind="schema-field.helpText" data-id="${idAttr}" value="${attr(field.helpText ?? '')}" placeholder="Optional user-facing help text" />
+    <label>Default value</label>
+    <input type="text" data-bind="schema-field.defaultValue" data-id="${idAttr}" value="${attr(String(field.defaultValue ?? ''))}" />
+    <label>Options — one per line, "value | label" (only used when type is Select)</label>
+    <textarea data-bind="schema-field.optionsText" data-id="${idAttr}" placeholder="option-a | Example option A">${escapeHtml(optionsText)}</textarea>
+    <label>Warnings — one per line (optional)</label>
+    <textarea data-bind="schema-field.warningsText" data-id="${idAttr}">${escapeHtml(warningsText)}</textarea>
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn danger small" data-action="toggle-schema-candidate-off" data-id="${idAttr}">Remove field</button>
+    </div>
+  </div>`;
+}
+
+/** Non-interactive: mirrors renderActionField's look with no data-bind wiring — cannot fill scripts or generate output. */
+function renderPreviewField(field: CuratedSchemaField): string {
+  const value = field.defaultValue;
+  if (field.type === 'checkbox') {
+    return `<label class="row" style="margin-top:0.6rem"><input type="checkbox" disabled style="width:auto"${value ? ' checked' : ''} /> &nbsp;${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
+  }
+  const labelHtml = `<label>${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
+  if (field.type === 'select') {
+    const opts = (field.options ?? [])
+      .map((o) => `<option${o.value === value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`)
+      .join('');
+    return `${labelHtml}<select disabled>${opts}</select>`;
+  }
+  if (field.type === 'number') {
+    return `${labelHtml}<input type="number" disabled value="${attr(String(value ?? 0))}" />`;
+  }
+  return `${labelHtml}<input type="text" disabled value="${attr(String(value ?? ''))}" placeholder="${attr(field.helpText ?? '')}" />`;
+}
+
+function renderSchemaEditor(script: ScriptFile, scan: ScriptScanResult): string {
+  const editor = state.schemaEditor;
+  if (!editor || editor.scriptId !== script.id) return '';
+
+  const rows = scan.candidates.map((c) => schemaCandidateRow(c, editor)).join('');
+  const includedNames = Array.from(editor.included);
+  const includedFieldsHtml = includedNames
+    .map((name) => {
+      const field = editor.fields.get(name);
+      return field ? schemaFieldEditor(name, field) : '';
+    })
+    .join('');
+  const previewFields = includedNames
+    .map((name) => editor.fields.get(name))
+    .filter((f): f is CuratedSchemaField => Boolean(f));
+  const previewHtml = previewFields.length
+    ? previewFields.map(renderPreviewField).join('')
+    : '<div class="empty">Include at least one field to preview the Action Builder form.</div>';
+  const errorsHtml = editor.errors.length
+    ? `<div class="badge error" style="display:block;margin:0.5rem 0">${editor.errors.map((e) => escapeHtml(e)).join('<br>')}</div>`
+    : '';
+  const savedHtml = editor.savedSchemaId
+    ? `<p class="muted">Saved &#10003; this curated schema is now selectable in Action Builder.</p>`
+    : '';
+  const statusOpts = (['draft', 'reviewed', 'disabled'] as const).map((s) => opt(s, cap(s), editor.status)).join('');
+
+  return `<div class="card" style="border-color:#2563eb66;background:#f5f8ff">
+    <div class="row" style="justify-content:space-between">
+      <h3>Create curated schema from scan</h3>
+      <button class="btn small" data-action="close-schema-editor">Close</button>
+    </div>
+    <div class="grid2">
+      <div><label>Schema id</label><input type="text" data-bind="schema.id" value="${attr(editor.id)}" /></div>
+      <div><label>Label</label><input type="text" data-bind="schema.label" value="${attr(editor.label)}" /></div>
+    </div>
+    <label>Description</label>
+    <input type="text" data-bind="schema.description" value="${attr(editor.description)}" />
+    <div class="grid2">
+      <div><label>Status</label><select data-bind="schema.status">${statusOpts}</select></div>
+      <div><label>Supported revision labels (comma-separated, optional)</label><input type="text" data-bind="schema.supportedRevisionLabels" value="${attr(editor.supportedRevisionLabels)}" /></div>
+    </div>
+    <p class="muted">Linked script: ${escapeHtml(script.filename)} (<code>${escapeHtml(script.id)}</code>)</p>
+
+    <h3>Scanner candidates</h3>
+    ${scan.candidates.length
+      ? `<table><thead><tr><th>Include</th><th>Name</th><th>Value</th><th>Inferred type</th><th>Confidence</th><th>Nearby comment</th><th>Annotation</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<div class="empty">No candidate variables found before the @@ marker.</div>'}
+
+    <h3>Included fields</h3>
+    ${includedFieldsHtml || '<div class="empty">No fields included yet — check candidates above to include them.</div>'}
+
+    <h3>Preview Action Builder fields</h3>
+    <p class="muted">Preview only — does not fill scripts or generate output.</p>
+    <div class="card">${previewHtml}</div>
+
+    ${errorsHtml}
+    ${savedHtml}
+    <div class="row" style="margin-top:0.75rem">
+      <button class="btn primary" data-action="save-schema-from-editor">Save curated schema</button>
+    </div>
+  </div>`;
+}
+
 function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: Project): string {
   const header = scan.sections.find((s) => s.kind === 'header');
   const body = scan.sections.find((s) => s.kind === 'body');
@@ -628,7 +880,9 @@ function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: P
       <button class="btn small" data-action="export-draft-schema" data-id="${attr(script.id)}">Export draft schema (.json)</button>
       <button class="btn small" data-action="attach-curated-schema" data-id="${attr(script.id)}">Attach curated schema (.json)</button>
       <input type="file" accept="application/json" data-action="curated-schema-file" data-id="${attr(script.id)}" id="curated-schema-input-${attr(script.id)}" style="display:none" aria-label="Attach curated action schema JSON" />
+      <button class="btn small" data-action="create-schema-from-scan" data-id="${attr(script.id)}">Create curated schema from scan</button>
     </div>
+    ${renderSchemaEditor(script, scan)}
     <h3>Curated schemas for this script</h3>
     ${attachedHtml || '<div class="empty">No curated schemas attached yet.</div>'}
   </div>`;
@@ -987,6 +1241,7 @@ function resetViewState(revisionLabel: string = ''): void {
   state.blockEdit.clear();
   state.highlightRef = null;
   state.actionBuilder = makeActionBuilderState(revisionLabel);
+  state.schemaEditor = null;
 }
 
 /**
@@ -1335,6 +1590,41 @@ async function handleClick(e: Event): Promise<void> {
     case 'attach-curated-schema':
       if (id) (document.getElementById(`curated-schema-input-${id}`) as HTMLInputElement | null)?.click();
       break;
+    case 'create-schema-from-scan': {
+      if (!p || !id) break;
+      const script = p.scripts.find((s) => s.id === id);
+      if (script) openSchemaEditor(script);
+      render();
+      break;
+    }
+    case 'close-schema-editor':
+      state.schemaEditor = null;
+      render();
+      break;
+    case 'toggle-schema-candidate-off':
+      if (id) {
+        toggleSchemaCandidate(id, false);
+        render();
+      }
+      break;
+    case 'save-schema-from-editor': {
+      if (!p) break;
+      const editor = state.schemaEditor;
+      if (!editor) break;
+      const script = p.scripts.find((s) => s.id === editor.scriptId);
+      if (!script) break;
+      const draft = buildDraftSchemaFromEditor(editor, script);
+      const errors = validateDraftSchema(draft, p);
+      editor.errors = errors;
+      if (errors.length > 0) {
+        render();
+        break;
+      }
+      upsertCuratedSchema(p.curatedSchemas, draft);
+      editor.savedSchemaId = draft.id;
+      commit();
+      break;
+    }
     case 'add-checklist': {
       if (!p) break;
       const prompt = readVal('ci-prompt').trim();
@@ -1456,6 +1746,21 @@ async function handleChange(e: Event): Promise<void> {
   }
   if (bind.startsWith('pasteback.')) {
     applyPasteBackBinding(bind, value);
+    render();
+    return;
+  }
+  if (bind === 'schema-candidate.include') {
+    toggleSchemaCandidate(id ?? '', checked ?? false);
+    render();
+    return;
+  }
+  if (bind.startsWith('schema-field.')) {
+    applySchemaFieldBinding(bind, id, value, checked);
+    render();
+    return;
+  }
+  if (bind.startsWith('schema.')) {
+    applySchemaEditorBinding(bind, value);
     render();
     return;
   }
@@ -1664,9 +1969,7 @@ async function handleCuratedSchemaFile(input: HTMLInputElement): Promise<void> {
     // regardless of what scriptId/scriptFilename the JSON itself carried.
     schema.scriptId = script.id;
     schema.scriptFilename = script.filename;
-    const idx = p.curatedSchemas.findIndex((s) => s.id === schema.id);
-    if (idx >= 0) p.curatedSchemas[idx] = schema;
-    else p.curatedSchemas.push(schema);
+    upsertCuratedSchema(p.curatedSchemas, schema);
     commit();
   } catch (err) {
     window.alert(`Curated schema import failed: ${(err as Error).message}`);

@@ -171,10 +171,12 @@ export interface Project {
   settings: ValidationSettings;
   latestValidation: ValidationResult | null;
   projectStatus: ProjectStatus;
-  /** Local Script Library — developer-only, informational. See ScriptFile below. */
+  /** Local Script Library (Manage Scripts) — developer-only, informational. See ScriptFile below. */
   scripts: ScriptFile[];
   /** Hand-reviewed action schemas curated from scanned scripts. See CuratedActionSchema below. */
   curatedSchemas: CuratedActionSchema[];
+  /** Batch "import script folder" operations. See ScriptPack below. */
+  scriptPacks: ScriptPack[];
 }
 
 export interface ReviewSummary {
@@ -361,6 +363,26 @@ export interface ScriptFile {
   notes?: string;
   /** Most recent scan of this script's rawText, if the user has run one. */
   lastScan?: ScriptScanResult;
+  /** Path relative to the imported folder root, if imported as part of a script pack. */
+  relativePath?: string;
+  /** Id of the ScriptPack this script was imported as part of, if any. */
+  packId?: string;
+}
+
+// --- Script packs (batch "import script folder") ----------------------------
+//
+// A ScriptPack records one folder-import operation: a name, when it happened,
+// the top-level folder name (if the browser reported one), and which scripts
+// (already stored verbatim in Project.scripts) came from it. It carries no
+// script text of its own and never mutates the scripts it references.
+
+export interface ScriptPack {
+  id: string;
+  name: string;
+  importedAt: string;
+  sourceFolderName?: string;
+  /** Ids into Project.scripts for the scripts imported as part of this pack. */
+  scriptIds: readonly string[];
 }
 
 // --- Curated action schemas (mock mode only) --------------------------------

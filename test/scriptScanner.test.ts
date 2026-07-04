@@ -178,6 +178,49 @@ describe('imported script rawText preservation', () => {
   });
 });
 
+describe('script pack (batch folder import) round-tripping', () => {
+  it('round-trips a script pack and its scripts\' relativePath/packId through project export/import', () => {
+    const project = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    project.scripts.push(makeScript(TOY_SCRIPT, { id: 'sc1', relativePath: 'ToyPack/misc/toy.txt', packId: 'pack1' }));
+    project.scriptPacks.push({ id: 'pack1', name: 'ToyPack', importedAt: ISO, sourceFolderName: 'ToyPack', scriptIds: ['sc1'] });
+
+    const roundTripped = importProjectJson(exportProjectJson(project));
+    expect(roundTripped.scriptPacks).toHaveLength(1);
+    expect(roundTripped.scriptPacks[0].sourceFolderName).toBe('ToyPack');
+    expect(roundTripped.scriptPacks[0].scriptIds).toEqual(['sc1']);
+    expect(roundTripped.scripts[0].relativePath).toBe('ToyPack/misc/toy.txt');
+    expect(roundTripped.scripts[0].packId).toBe('pack1');
+    expect(roundTripped.scripts[0].rawText).toBe(TOY_SCRIPT);
+  });
+
+  it('defaults scriptPacks to an empty array when importing an older project export without the field', () => {
+    const project = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    const obj = JSON.parse(exportProjectJson(project));
+    delete obj.scriptPacks;
+    expect(importProjectJson(JSON.stringify(obj)).scriptPacks).toEqual([]);
+  });
+
+  it('leaves a script\'s relativePath/packId undefined when it was not imported as part of a pack', () => {
+    const project = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    project.scripts.push(makeScript(TOY_SCRIPT, { id: 'sc1' }));
+    const roundTripped = importProjectJson(exportProjectJson(project));
+    expect(roundTripped.scripts[0].relativePath).toBeUndefined();
+    expect(roundTripped.scripts[0].packId).toBeUndefined();
+  });
+});
+
 describe('draft action schema', () => {
   it('is deterministic: the same scan produces byte-identical exported JSON', () => {
     const script = makeScript(TOY_SCRIPT);

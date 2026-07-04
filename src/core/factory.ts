@@ -39,5 +39,6 @@ export function createProject(
     projectStatus: 'draft',
     scripts: [],
     curatedSchemas: [],
+    scriptPacks: [],
   };
 }

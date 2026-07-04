@@ -16,6 +16,7 @@ import type {
   ScriptScanResult,
   ScriptSection,
   ScriptDirective,
+  ScriptPack,
   VariableCandidate,
   DraftActionSchema,
   CuratedActionSchema,
@@ -421,7 +422,25 @@ function parseScriptFile(v: unknown, i: number): ScriptFile {
   if (o.lastScan !== undefined && o.lastScan !== null) {
     script.lastScan = parseScriptScanResult(o.lastScan, `${path}.lastScan`);
   }
+  const relativePath = asOptString(o.relativePath, `${path}.relativePath`);
+  if (relativePath !== undefined) script.relativePath = relativePath;
+  const packId = asOptString(o.packId, `${path}.packId`);
+  if (packId !== undefined) script.packId = packId;
   return script;
+}
+
+function parseScriptPack(v: unknown, i: number): ScriptPack {
+  const path = `scriptPacks[${i}]`;
+  const o = asObject(v, path);
+  const pack: ScriptPack = {
+    id: asString(o.id, `${path}.id`),
+    name: asString(o.name, `${path}.name`),
+    importedAt: asString(o.importedAt, `${path}.importedAt`),
+    scriptIds: asStringArray(o.scriptIds, `${path}.scriptIds`),
+  };
+  const sourceFolderName = asOptString(o.sourceFolderName, `${path}.sourceFolderName`);
+  if (sourceFolderName !== undefined) pack.sourceFolderName = sourceFolderName;
+  return pack;
 }
 
 /** Serialize an auto-generated draft schema for local export only (no network). */
@@ -524,6 +543,10 @@ function parseProject(v: unknown): Project {
     // Backwards-compatible: older exports predate curated schemas.
     curatedSchemas: o.curatedSchemas !== undefined
       ? asArray(o.curatedSchemas, 'curatedSchemas').map((s, i) => parseCuratedActionSchema(s, `curatedSchemas[${i}]`))
+      : [],
+    // Backwards-compatible: older exports predate script packs.
+    scriptPacks: o.scriptPacks !== undefined
+      ? asArray(o.scriptPacks, 'scriptPacks').map((s, i) => parseScriptPack(s, i))
       : [],
   };
 }

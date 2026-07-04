@@ -54,3 +54,10 @@ export function supportsRevision(schema: CuratedActionSchema, revisionLabel: str
   const norm = normalizeLabel(revisionLabel);
   return schema.supportedRevisionLabels.some((r) => normalizeLabel(r) === norm);
 }
+
+/** Add a new curated schema, or replace the existing one with the same id, in place. */
+export function upsertCuratedSchema(schemas: CuratedActionSchema[], schema: CuratedActionSchema): void {
+  const idx = schemas.findIndex((s) => s.id === schema.id);
+  if (idx >= 0) schemas[idx] = schema;
+  else schemas.push(schema);
+}

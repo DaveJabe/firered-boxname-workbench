@@ -46,13 +46,7 @@ import {
   type ProjectSummary,
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
-
-type Screen = 'projects' | 'new' | 'metadata' | 'actions' | 'scripts' | 'checklist' | 'notes' | 'imports' | 'validation' | 'report';
-
-const SCREEN_LABEL: Record<Screen, string> = {
-  projects: 'All projects', new: 'New project', metadata: 'Metadata', actions: 'Action Builder', scripts: 'Script Library',
-  checklist: 'Checklist', notes: 'Notes', imports: 'Imported text', validation: 'Validation', report: 'Report',
-};
+import { type Screen, SCREEN_LABEL, SIDEBAR_SCREENS, defaultScreenForWorkspace, type WorkspaceOrigin } from './navigation.js';
 
 interface PasteBackState {
   rawText: string;
@@ -127,7 +121,7 @@ const state: {
   highlightRef: string | null;
   actionBuilder: ActionBuilderState;
 } = {
-  screen: 'projects',
+  screen: 'landing',
   summaries: [],
   project: null,
   checklistFilter: 'all',
@@ -178,19 +172,15 @@ function opt(value: string, label: string, current: string): string {
 
 function navRail(): string {
   if (!state.project) return '';
-  const screens: [Screen, string][] = [
-    ['metadata', 'Metadata'], ['actions', 'Action Builder'], ['scripts', 'Script Library'], ['checklist', 'Checklist'],
-    ['notes', 'Notes'], ['imports', 'Imported text'], ['validation', 'Validation'], ['report', 'Report'],
-  ];
-  const items = screens
-    .map(([s, label]) => {
+  const items = SIDEBAR_SCREENS
+    .map((s) => {
       const active = state.screen === s;
-      return `<button data-action="nav" data-screen="${s}" class="${active ? 'active' : ''}"${active ? ' aria-current="page"' : ''}>${label}</button>`;
+      return `<button data-action="nav" data-screen="${s}" class="${active ? 'active' : ''}"${active ? ' aria-current="page"' : ''}>${escapeHtml(SCREEN_LABEL[s])}</button>`;
     })
     .join('');
-  return `<nav class="rail" aria-label="Project sections">
-    <button data-action="go-projects">&larr; All projects</button>
-    <h2>${escapeHtml(state.project.metadata.projectTitle || 'Untitled')}</h2>
+  return `<nav class="rail" aria-label="Workspace sections">
+    <button data-action="go-landing">&larr; Recent workspaces</button>
+    <h2>${escapeHtml(state.project.metadata.projectTitle || 'Untitled workspace')}</h2>
     ${items}
   </nav>`;
 }
@@ -221,14 +211,14 @@ function layout(content: string): string {
 function render(): void {
   let content = '';
   switch (state.screen) {
-    case 'projects': content = renderProjects(); break;
-    case 'new': content = renderNew(); break;
-    case 'metadata': content = renderMetadata(); break;
+    case 'landing': content = renderLanding(); break;
+    case 'start-here': content = renderStartHere(); break;
+    case 'settings': content = renderSettings(); break;
     case 'actions': content = renderActions(); break;
     case 'scripts': content = renderScripts(); break;
     case 'checklist': content = renderChecklist(); break;
     case 'notes': content = renderNotes(); break;
-    case 'imports': content = renderImports(); break;
+    case 'outputs': content = renderOutputs(); break;
     case 'validation': content = renderValidation(); break;
     case 'report': content = renderReport(); break;
   }
@@ -247,10 +237,10 @@ function render(): void {
   }
 }
 
-function renderProjects(): string {
-  const cards =
+function renderLanding(): string {
+  const recentCards =
     state.summaries.length === 0
-      ? '<div class="empty">No projects yet. Create one, or load the harmless demo project to explore the interface.</div>'
+      ? '<div class="empty">No recent workspaces yet. Start with an action, import a script, or load the demo workspace above.</div>'
       : state.summaries
           .map(
             (s) => `<div class="card row" style="justify-content:space-between">
@@ -266,59 +256,67 @@ function renderProjects(): string {
           )
           .join('');
   return `<h1>FireRed BoxName Workbench</h1>
-    <p class="muted">A local-first workbench for known FireRed box-name techniques: templates, fields, script input, and reviewable output, all kept with provenance.</p>
-    <div class="row">
-      <button class="btn primary" data-action="new-project">New project</button>
-      <button class="btn" data-action="import-json">Import project (.json)</button>
-      <button class="btn" data-action="load-demo">Load demo project</button>
-      <input type="file" accept="application/json" data-action="import-file" id="import-file-input" style="display:none" aria-label="Import project JSON file" />
+    <p class="muted">A local-first workbench for known FireRed box-name techniques. Choose an action, fill in its fields, and prepare reviewable output — all kept with provenance.</p>
+    <div class="grid2">
+      <div class="card">
+        <h3>Start with an action</h3>
+        <p class="muted">Choose a built-in or curated action and fill fields.</p>
+        <button class="btn primary" data-action="start-with-action">Start with an action</button>
+      </div>
+      <div class="card">
+        <h3>Import a script</h3>
+        <p class="muted">Bring in a local .txt script, scan it, and attach a schema.</p>
+        <button class="btn primary" data-action="start-import-script">Import a script</button>
+      </div>
+      <div class="card">
+        <h3>Load demo workspace</h3>
+        <p class="muted">Explore harmless sample data.</p>
+        <button class="btn" data-action="load-demo">Load demo workspace</button>
+      </div>
+      <div class="card">
+        <h3>Open recent workspace</h3>
+        <p class="muted">Continue previous work.</p>
+        <button class="btn" data-action="scroll-to-recent">Open recent workspace</button>
+      </div>
     </div>
-    <h3>Projects</h3>
-    ${cards}`;
-}
-
-function renderNew(): string {
-  const templateOpts = TEMPLATES.map((t) => opt(t.key, t.title, TEMPLATES[0].key)).join('');
-  return `<h1>New project</h1>
-    <div class="card">
-      <label for="np-title">Project title (organizational label only)</label>
-      <input type="text" id="np-title" placeholder="e.g. FireRed setup notes — batch A" />
-      <div class="grid2">
-        <div>
-          <label for="np-revision">Revision label *</label>
-          <input type="text" id="np-revision" placeholder="e.g. Rev 1 (label only)" />
-        </div>
-        <div>
-          <label for="np-language">Language label</label>
-          <input type="text" id="np-language" placeholder="e.g. English" />
-        </div>
-      </div>
-      <div class="grid2">
-        <div>
-          <label for="np-mode">Mode</label>
-          <select id="np-mode">${opt('documentation', 'Documentation', 'documentation')}${opt('checklist-review', 'Checklist review', 'documentation')}</select>
-        </div>
-        <div>
-          <label for="np-template">Checklist template (read-only)</label>
-          <select id="np-template">${templateOpts}</select>
-        </div>
-      </div>
-      <div class="row" style="margin-top:1rem">
-        <button class="btn primary" data-action="create">Create</button>
-        <button class="btn" data-action="go-projects">Cancel</button>
-      </div>
-      <p class="muted" style="margin-top:0.5rem">Game is locked to FireRed. Fields marked * are required.</p>
+    <h3 id="recent-workspaces">Recent workspaces</h3>
+    ${recentCards}
+    <div class="row" style="margin-top:0.75rem">
+      <button class="btn small" data-action="import-json">Import workspace (.json)</button>
+      <input type="file" accept="application/json" data-action="import-file" id="import-file-input" style="display:none" aria-label="Import workspace JSON file" />
     </div>`;
 }
 
-function renderMetadata(): string {
+function renderStartHere(): string {
+  const p = state.project!;
+  return `<h1>Start Here</h1>
+    <p class="muted">A quick orientation for this workspace. Everything here stays local — no network calls, nothing runs in the background.</p>
+    <div class="grid2">
+      <div class="card">
+        <h3>Action Builder</h3>
+        <p class="muted">Choose a built-in or curated action, fill in its fields, and prepare a mock or filled-script preview.</p>
+        <button class="btn primary" data-action="nav" data-screen="actions">Go to Action Builder</button>
+      </div>
+      <div class="card">
+        <h3>Script Library</h3>
+        <p class="muted">Import your own local .txt scripts, scan them, and attach curated schemas for the Action Builder to use.</p>
+        <button class="btn" data-action="nav" data-screen="scripts">Go to Script Library</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>This workspace so far</h3>
+      <p class="muted">${p.scripts.length} script(s) · ${p.curatedSchemas.length} curated schema(s) · ${p.importedBlocks.length} saved output(s) · ${p.checklist.length} checklist item(s)</p>
+    </div>`;
+}
+
+function renderSettings(): string {
   const p = state.project!;
   const m = p.metadata;
-  return `<h1>Metadata</h1>
+  return `<h1>Settings</h1>
     <div class="card" data-ref="metadata">
       <label for="m-game">Game</label>
       <input type="text" id="m-game" value="FireRed" disabled aria-label="Game (locked to FireRed)" />
-      <label for="m-title">Project title</label>
+      <label for="m-title">Workspace title</label>
       <input type="text" id="m-title" data-bind="metadata.projectTitle" value="${attr(m.projectTitle)}" />
       <div class="grid2">
         <div>
@@ -336,7 +334,7 @@ function renderMetadata(): string {
           <select id="m-mode" data-bind="metadata.mode">${opt('documentation', 'Documentation', m.mode)}${opt('checklist-review', 'Checklist review', m.mode)}</select>
         </div>
         <div>
-          <label for="m-status">Project status</label>
+          <label for="m-status">Workspace status</label>
           <select id="m-status" data-bind="status">
             ${opt('draft', 'Draft', p.projectStatus)}${opt('in-review', 'In review', p.projectStatus)}${opt('reviewed', 'Reviewed', p.projectStatus)}${opt('exported', 'Exported', p.projectStatus)}
           </select>
@@ -385,7 +383,7 @@ function boxNameSheet(p: Project, output: MockGeneratedOutput, savedBlockId: str
     <table><thead><tr><th>Box</th><th>Row</th><th>Box name</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     <div class="row" style="margin-top:0.5rem">
       <button class="btn" data-action="copy-all-box-rows">Copy all</button>
-      <button class="btn primary" data-action="save-mock-output">Save to project</button>
+      <button class="btn primary" data-action="save-mock-output">Save to workspace</button>
     </div>
     ${saved}
   </div>`;
@@ -464,7 +462,7 @@ function pasteBackCard(p: Project, ab: ActionBuilderState, actionLabel: string):
     <div class="row" style="margin-top:0.5rem">
       <button class="btn" data-action="preview-pasted-output">Preview box-name sheet</button>
       <button class="btn" data-action="copy-pasted-output">Copy all raw output</button>
-      <button class="btn primary" data-action="save-pasted-output">Save output to project</button>
+      <button class="btn primary" data-action="save-pasted-output">Save output to workspace</button>
     </div>
     ${preview}
     ${saved}
@@ -523,8 +521,15 @@ function renderActions(): string {
       </div>`
     : '';
 
+  const emptyStateHtml = p.curatedSchemas.length === 0
+    ? `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
+        <p class="muted">New here? Choose a built-in template below to try the Action Builder immediately, or <button class="btn small" data-action="nav" data-screen="scripts">import a script</button> if you want to use your own script.</p>
+      </div>`
+    : '';
+
   return `<h1>Action Builder <span class="pill">mock / non-operational</span></h1>
     <p class="muted">Choose a known action template or a curated schema, fill in its fields, and generate a mock box-name sheet. Output here is always a fixed placeholder — no real generator is connected in this phase.</p>
+    ${emptyStateHtml}
     <div class="card">
       <div class="grid2">
         <div>
@@ -653,8 +658,14 @@ function renderScriptCard(s: ScriptFile, project: Project): string {
 function renderScripts(): string {
   const p = state.project!;
   const scripts = p.scripts.map((s) => renderScriptCard(s, p)).join('');
+  const emptyStateHtml = p.scripts.length === 0
+    ? `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
+        <p class="muted">Import a local .txt script, run the scanner to find candidate fields, attach a curated schema describing what each field means, then switch to the Action Builder and select that curated schema to use it.</p>
+      </div>`
+    : '';
   return `<h1>Script Library <span class="pill">developer-only, informational</span></h1>
     <p class="muted">Import local .txt action scripts to inspect them as plain text. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
+    ${emptyStateHtml}
     ${scripts || '<div class="empty">No scripts imported yet.</div>'}
     <div class="card">
       <h3>Import a script</h3>
@@ -838,12 +849,12 @@ function renderBlock(b: ImportedTextBlock): string {
   </div>`;
 }
 
-function renderImports(): string {
+function renderOutputs(): string {
   const p = state.project!;
   const blocks = p.importedBlocks.map(renderBlock).join('');
-  return `<h1>Imported text blocks</h1>
+  return `<h1>Saved Outputs</h1>
     <p class="muted">Text is stored exactly as pasted or loaded. It is never modified or generated; line numbers are display-only and the "Copy raw" button copies the stored text verbatim.</p>
-    ${blocks || '<div class="empty">No imported blocks yet.</div>'}
+    ${blocks || '<div class="empty">No saved outputs yet.</div>'}
     <div class="card">
       <h3>Add a block</h3>
       <div class="grid2">
@@ -951,7 +962,7 @@ function renderReport(): string {
       <p class="muted">${summary.confirmed}/${summary.totalItems} confirmed · ${p.importedBlocks.length} imported block(s) · ${p.notes.length} note section(s) · ${(p.latestValidation?.findings.length ?? 0)} validation finding(s)</p>
       <div class="row">
         <button class="btn primary" data-action="open-report">Open printable report</button>
-        <button class="btn" data-action="export-json">Export project (.json)</button>
+        <button class="btn" data-action="export-json">Export workspace (.json)</button>
       </div>
       <p class="muted" style="margin-top:0.5rem">The printable report opens in a new tab. Use your browser's <strong>Print / Save as PDF</strong> command to save it. Everything stays on this device.</p>
     </div>`;
@@ -963,7 +974,7 @@ async function loadProject(id: string): Promise<void> {
   const p = await getProject(id);
   if (p) {
     state.project = p;
-    state.screen = 'metadata';
+    state.screen = defaultScreenForWorkspace('opened');
     resetViewState(p.metadata.revisionLabel);
     render();
   }
@@ -978,12 +989,30 @@ function resetViewState(revisionLabel: string = ''): void {
   state.actionBuilder = makeActionBuilderState(revisionLabel);
 }
 
+/**
+ * Silently create a fresh workspace with blank metadata — the user is never
+ * asked to fill in a title/revision/language before using the Action
+ * Builder or Script Library. They can fill those in later via Settings.
+ */
+async function startNewWorkspace(origin: WorkspaceOrigin): Promise<void> {
+  const project = createProject(
+    { revisionLabel: '', languageLabel: '', projectTitle: '', mode: 'documentation', templateKey: TEMPLATES[0].key },
+    uid,
+    nowIso,
+  );
+  await putProject(project);
+  state.project = project;
+  state.screen = defaultScreenForWorkspace(origin);
+  resetViewState(project.metadata.revisionLabel);
+  await refreshSummaries();
+}
+
 function jumpTo(kind: TargetKind, ref: string | undefined): void {
   switch (kind) {
-    case 'metadata': state.screen = 'metadata'; break;
+    case 'metadata': state.screen = 'settings'; break;
     case 'checklist': state.screen = 'checklist'; state.checklistFilter = 'all'; break;
     case 'note': state.screen = 'notes'; break;
-    case 'importedBlock': state.screen = 'imports'; if (ref) state.collapsed.delete(ref); break;
+    case 'importedBlock': state.screen = 'outputs'; if (ref) state.collapsed.delete(ref); break;
   }
   if (ref) state.highlightRef = ref;
   render();
@@ -1001,35 +1030,21 @@ async function handleClick(e: Event): Promise<void> {
       state.screen = el.dataset.screen as Screen;
       render();
       break;
-    case 'go-projects':
+    case 'go-landing':
       state.project = null;
-      state.screen = 'projects';
+      state.screen = 'landing';
       resetViewState();
       await refreshSummaries();
       break;
-    case 'new-project':
-      state.screen = 'new';
-      render();
+    case 'start-with-action':
+      await startNewWorkspace('created');
       break;
-    case 'create': {
-      const project = createProject(
-        {
-          revisionLabel: readVal('np-revision'),
-          languageLabel: readVal('np-language'),
-          projectTitle: readVal('np-title'),
-          mode: (readVal('np-mode') as Project['metadata']['mode']) || 'documentation',
-          templateKey: readVal('np-template') || TEMPLATES[0].key,
-        },
-        uid,
-        nowIso,
-      );
-      await putProject(project);
-      state.project = project;
-      state.screen = 'metadata';
-      resetViewState(project.metadata.revisionLabel);
-      await refreshSummaries();
+    case 'start-import-script':
+      await startNewWorkspace('import-script');
       break;
-    }
+    case 'scroll-to-recent':
+      document.getElementById('recent-workspaces')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      break;
     case 'load-demo': {
       const demo = importProjectJson(DEMO_PROJECT_JSON);
       demo.id = uid();
@@ -1038,7 +1053,7 @@ async function handleClick(e: Event): Promise<void> {
       demo.metadata.updatedAt = now;
       await putProject(demo);
       state.project = demo;
-      state.screen = 'metadata';
+      state.screen = defaultScreenForWorkspace('demo');
       resetViewState(demo.metadata.revisionLabel);
       await refreshSummaries();
       break;
@@ -1047,7 +1062,7 @@ async function handleClick(e: Event): Promise<void> {
       if (id) await loadProject(id);
       break;
     case 'delete':
-      if (id && window.confirm('Delete this project? This cannot be undone.')) {
+      if (id && window.confirm('Delete this workspace? This cannot be undone.')) {
         await deleteProject(id);
         await refreshSummaries();
       }
@@ -1598,7 +1613,7 @@ async function handleImportFile(input: HTMLInputElement): Promise<void> {
     const project = importProjectJson(text);
     await putProject(project);
     await refreshSummaries();
-    window.alert('Project imported.');
+    window.alert('Workspace imported.');
   } catch (err) {
     window.alert(`Import failed: ${(err as Error).message}`);
   }

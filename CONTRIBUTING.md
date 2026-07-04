@@ -31,8 +31,8 @@ be rejected regardless of how convenient the feature seems.
 
 ## This tool must always
 
-- Store and display imported (and, once a generator adapter exists, script-
-  provided) text **verbatim** — no silent transformation of user- or
+- Store and display imported, filled-script, and pasted-back generator
+  output text **verbatim** — no silent transformation of user- or
   script-provided text.
 - Keep the validators in `src/core/validators.ts` **pure**: functions of their
   inputs that return `Finding[]`, never mutating inputs and never emitting

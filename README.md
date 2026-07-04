@@ -1,32 +1,40 @@
 # FireRed BoxName Workbench
 
-A **local-first personal workbench** for known FireRed box-name techniques. It
-helps you choose a known action template, fill in the fields it needs, prepare
-and review script input, present box-name output, keep provenance for
-everything, and copy/print/export the result.
+A **local-first personal workbench** for known FireRed box-name techniques.
+Open it, start with an action or import your own script, fill in a few
+fields, and prepare reviewable box-name output — with provenance kept the
+whole way through. It can save your work as a local workspace, but you're
+never required to think about that before using it.
 
-## Project status
+## Status
 
-**Phase 1 scaffold — hardening pass complete.** The app runs end-to-end locally:
-Projects list, New Project wizard, Metadata, Checklist, Notes, Imported Text
-Blocks, Validation, and Report preview/export, with local (IndexedDB)
-persistence. Typecheck, unit tests, the no-network audit, and the production
-build all pass, and CI runs them on every push and pull request. This pass was
-a **scope and identity refactor**: the project name and boundaries were
-brought in line with its actual purpose. The action-template builder and any
-generator adapter are **explicitly deferred** to a future branch — see
-[docs/scope.md](./docs/scope.md).
+The workbench runs end-to-end locally, workbench-first: a landing screen for
+starting an action, importing a script, loading the demo workspace, or
+opening a recent one; an Action Builder (built-in mock templates or curated
+schemas, a conservative script filler, and a manual paste-back flow for your
+own external generator's output); a Script Library (import, scan, and curate
+schemas for local `.txt` scripts); and secondary Saved Outputs, Validation,
+Report, Settings, Checklist, and Notes screens. Typecheck, unit tests, the
+no-network audit, and the production build all pass, and CI runs them on
+every push and pull request. No generator invocation, subprocess execution,
+or network calls exist anywhere in the app — see
+[docs/scope.md](./docs/scope.md) for the full boundary.
 
 ## Scope
 
 This app is a local-first personal tool for:
 
-- choosing known FireRed action templates,
+- choosing known FireRed action templates or curated schemas,
 - filling in the user-facing fields those templates need,
-- preparing and reviewing script input,
-- presenting box-name output,
-- preserving provenance,
+- preparing and reviewing script input, including a conservative,
+  header-only script filler,
+- presenting box-name output — mock, filled-script, or pasted back from your
+  own external generator,
+- preserving provenance for everything,
 - copying, printing, and exporting output.
+
+Saved workspaces (local, IndexedDB) exist to hold this work between visits,
+not as something to configure up front.
 
 See [docs/scope.md](./docs/scope.md) for the full scope statement.
 
@@ -103,16 +111,24 @@ src/report       self-contained printable HTML report renderer
 src/ui           screens and event handling
 test             validator unit tests, including purity/determinism checks
 scripts          no-network audit
-docs             project scope and boundaries
+docs             workspace scope and boundaries
 .github/workflows CI: npm ci, typecheck, test, audit:network, build
 ```
 
 ## Workflow (matches the product design)
 
-1. **New project** — game locked to FireRed; pick revision/language labels, a
-   title, a mode, and a read-only checklist template.
-2. **Metadata / Checklist / Notes / Imports** — record and organize your work.
-3. **Validation** — configure limits, run the formatting linter, review and
-   acknowledge findings.
-4. **Report** — open a printable report (Save as PDF via the browser) or export
-   the project as JSON.
+1. **Landing** — start with an action, import a script, load the demo
+   workspace, or open a recent one. A workspace is created silently in the
+   background; you're never asked to fill in a title or revision first.
+2. **Action Builder** — choose a built-in template or a curated schema, fill
+   in its fields, and either generate a mock box-name sheet, preview a
+   filled script to copy into your own generator, or paste that generator's
+   output back in and save it with provenance.
+3. **Script Library** — import a local `.txt` script, run the scanner to
+   find candidate fields, and attach a curated schema so the Action Builder
+   can use it.
+4. **Saved Outputs / Validation / Report** — review everything you've saved,
+   run the formatting linter, and open a printable report or export the
+   workspace as JSON.
+5. **Settings / Checklist / Notes** — workspace metadata and documentation,
+   available whenever you want them but never required up front.

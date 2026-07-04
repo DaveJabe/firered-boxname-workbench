@@ -2,50 +2,62 @@
 
 FireRed BoxName Workbench is a **personal, local-first workbench** for known
 FireRed box-name techniques. It is not a tool for finding new techniques, and
-it is not (yet) integrated with any generator.
+it never invokes any generator itself — you always run your own, by hand,
+outside this app.
 
 ## What this app is
 
 A place to:
 
-- choose from known FireRed action templates,
+- choose from known FireRed action templates or curated schemas,
 - fill in the user-facing fields those templates need,
-- prepare and review the text you will feed into your own local script,
-- present and review box-name output produced by that script,
-- keep provenance for everything recorded or imported,
+- prepare and review script input, including a conservative, header-only
+  script filler that only substitutes values you provide into variables a
+  curated schema explicitly maps,
+- present and review box-name output — mock placeholder output, a filled
+  script preview to copy elsewhere, or output you paste back in after
+  running your own generator by hand,
+- keep provenance for everything recorded, imported, filled, or pasted back,
 - copy, print, or export the result.
+
+Saved workspaces (local, IndexedDB) hold this work between visits, but using
+the workbench never requires setting one up first — start with an action or
+import a script, and a workspace is created for you in the background.
 
 ## What this app is not
 
 - **Not a route-discovery tool.** It does not search for, propose, or rank new
   routes, setups, or techniques. Techniques come from you, already known.
 - **Not exploit research.** It works only with techniques you already have —
-  from a template or from text you import — and never derives new ones.
+  from a template, a curated schema, or text you import — and never derives
+  new ones.
 - **Not networked.** No request ever leaves the machine; see the README's
   "Offline by construction" section for how that is enforced.
 - **Not a background process.** Every action is the direct result of
   something you clicked or typed. Nothing runs on a timer or invisibly.
 - **Not a ROM/save-file/emulator tool**, unless that is explicitly added in a
   future branch with its own scope review.
-- **Not a generator.** Any existing local script or generator you use
-  alongside this app is the source of truth for what it produces. This app
-  does not reimplement it, judge its correctness, or silently alter its
-  output — it only helps you prepare input for it and review, store, or
-  export what it returns.
+- **Not a generator, and never invokes one.** Any existing local script or
+  generator you use alongside this app is the source of truth for what it
+  produces. This app does not run it, reimplement it, judge its correctness,
+  or silently alter its output — the script filler only prepares text for you
+  to copy into your own generator by hand, and the paste-back flow only
+  stores what you bring back from running it yourself.
 
 ## Provenance and review
 
-Every piece of text this app shows you — typed, imported, or (once a
-generator adapter exists) returned from a script — is stored with a record of
-where it came from, and displayed verbatim. Nothing is exported or printed
-without being reviewable first.
+Every piece of text this app shows you — typed, imported, filled by the
+script filler, or pasted back after running your own generator — is stored
+with a record of where it came from, and displayed verbatim. Nothing is
+exported or printed without being reviewable first.
 
 ## What's explicitly deferred
 
-- **Generator integration** — running or wrapping a local script/generator,
-  and the action-template builder that would feed it — is out of scope for
-  now. This document describes the boundary that work must respect when it
-  lands; it does not describe an existing feature.
+- **Real generator invocation** — actually running or wrapping a local
+  script/generator from within this app (subprocess execution, Tauri, or any
+  other direct integration) — is out of scope. This document describes the
+  boundary that would apply if it were ever proposed; it does not describe
+  an existing or planned feature.
 - **ROM/save-file/emulator handling**, if ever added, needs its own branch and
   its own update to this document.
 

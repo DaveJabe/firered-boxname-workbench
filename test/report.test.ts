@@ -99,6 +99,29 @@ describe('report escapes external-tool provenance', () => {
   });
 });
 
+describe('report escapes mock-output provenance', () => {
+  it('escapes actionId / actionLabel / generatedBy and labels the block as mock output', () => {
+    const p = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    p.importedBlocks.push({
+      id: 'b1', title: 'Warp — mock output', categoryLabel: 'Mock output', revisionLabel: 'Rev 1',
+      rawText: 'Box 1: PLACEHLD\nBox 2: PLACEHLD\nBox 3: PLACEHLD', notes: '',
+      source: {
+        type: 'mock-output', label: 'Mock generator output', importedAt: ISO, schemaVersion: 1,
+        actionId: '<script>id</script>', actionLabel: '<script>al</script>', generatedBy: 'mock-generator-adapter',
+      },
+    });
+    const html = renderReportHtml(p, ISO);
+    expect(html).not.toContain('<script');
+    expect(html).toContain('&lt;script&gt;al&lt;/script&gt;');
+    expect(html).toContain('mock-generator-adapter');
+    expect(html).toContain('PLACEHLD');
+  });
+});
+
 describe('report groups findings by severity', () => {
   it('renders the Error section before the Warning section', () => {
     const p = createProject(

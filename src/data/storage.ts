@@ -253,6 +253,13 @@ function parseSource(v: unknown, path: string): TextSource {
   if (toolUrl !== undefined) src.toolUrl = toolUrl;
   const invocationNotes = asOptStringMax(o.invocationNotes, `${p}.invocationNotes`, SOURCE_FIELD_MAX.invocationNotes);
   if (invocationNotes !== undefined) src.invocationNotes = invocationNotes;
+  // Mock-output provenance fields (strings only; never read back to compute anything).
+  const actionId = asOptStringMax(o.actionId, `${p}.actionId`, SOURCE_FIELD_MAX.actionId);
+  if (actionId !== undefined) src.actionId = actionId;
+  const actionLabel = asOptStringMax(o.actionLabel, `${p}.actionLabel`, SOURCE_FIELD_MAX.actionLabel);
+  if (actionLabel !== undefined) src.actionLabel = actionLabel;
+  const generatedBy = asOptStringMax(o.generatedBy, `${p}.generatedBy`, SOURCE_FIELD_MAX.generatedBy);
+  if (generatedBy !== undefined) src.generatedBy = generatedBy;
   return src;
 }
 

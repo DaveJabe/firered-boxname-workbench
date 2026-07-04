@@ -67,8 +67,13 @@ export interface UserNote {
  * mark a block as having come from an external local tool and document that tool,
  * but the app never runs, calls, embeds, or integrates with any external tool.
  * Text still arrives only via manual paste or file import, stored verbatim.
+ *
+ * `mock-output` marks a block saved from the Action Builder's mock generator
+ * (see MockGeneratedOutput below). It is placeholder output only — the mock
+ * adapter never computes real game-related content — but it is still stored
+ * and displayed verbatim like any other block, with its own provenance.
  */
-export type TextSourceType = 'manual-paste' | 'file-import' | 'demo-fixture' | 'external-local-tool';
+export type TextSourceType = 'manual-paste' | 'file-import' | 'demo-fixture' | 'external-local-tool' | 'mock-output';
 
 export interface TextSource {
   type: TextSourceType;
@@ -89,6 +94,13 @@ export interface TextSource {
   toolVersion?: string;
   toolUrl?: string;
   invocationNotes?: string;
+
+  // --- mock-output provenance fields (metadata only) ---
+  // Record which placeholder action template produced a mock-output block.
+  // Never read back to compute anything; the app only displays these strings.
+  actionId?: string;
+  actionLabel?: string;
+  generatedBy?: string;
 }
 
 export interface ImportedTextBlock {
@@ -171,3 +183,41 @@ export const DEFAULT_VALIDATION_SETTINGS: ValidationSettings = {
   maxLineLength: 30,
   countMode: 'codepoints',
 };
+
+// --- Action Builder (Phase 1: mock output only) -----------------------------
+//
+// These types describe the Action Builder workflow: a user picks a known
+// FireRed action template (see src/templates/action-templates.ts), fills in
+// its fields, and runs the MOCK generator adapter (src/core/generatorAdapter.ts)
+// to get placeholder box-name rows. Nothing here computes real game-related
+// output; ActionInput values are opaque, user-supplied field values, and
+// MockGeneratedOutput.rows always carry a fixed placeholder string.
+
+/** A single field's value, as entered by the user in the Action Builder. */
+export type ActionFieldValue = string | number | boolean;
+
+/** The user's filled-in inputs for one action template, before generation. */
+export interface ActionInput {
+  actionId: string;
+  revisionLabel: string;
+  values: Record<string, ActionFieldValue>;
+}
+
+/** One row of a box-name sheet: a box, its display label, and placeholder text. */
+export interface BoxNameRow {
+  boxLabel: string;
+  rowLabel: string;
+  /** Always a fixed placeholder string (e.g. "PLACEHLD") in this phase. */
+  text: string;
+}
+
+/** The result of running the mock generator adapter over an ActionInput. */
+export interface MockGeneratedOutput {
+  actionId: string;
+  actionLabel: string;
+  revisionLabel: string;
+  generatedAt: string;
+  rows: readonly BoxNameRow[];
+  /** Always true — a visible marker that this is placeholder, not real, output. */
+  isMock: true;
+}

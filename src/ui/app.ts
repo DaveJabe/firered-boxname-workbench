@@ -1,4 +1,14 @@
-import type { Project, ChecklistItem, UserNote, ImportedTextBlock, Finding, TargetKind } from '../core/types.js';
+import type {
+  Project,
+  ChecklistItem,
+  UserNote,
+  ImportedTextBlock,
+  Finding,
+  TargetKind,
+  ActionFieldValue,
+  ActionInput,
+  MockGeneratedOutput,
+} from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
 import { computeReviewSummary, isReviewComplete, filterByState, type ChecklistFilter } from '../core/review.js';
@@ -7,6 +17,10 @@ import { numberLines } from '../core/normalize.js';
 import { SOURCE_TYPE_LABELS, SOURCE_SCHEMA_VERSION, SELECTABLE_SOURCE_TYPES, SOURCE_FIELD_MAX } from '../core/sources.js';
 import { renderReportHtml } from '../report/report.js';
 import { TEMPLATES } from '../templates/checklist-templates.js';
+import { ACTION_TEMPLATES, getActionTemplate, type ActionField } from '../templates/action-templates.js';
+import { defaultActionValues, coerceActionFieldValue, missingRequiredActionFields } from '../core/actionInput.js';
+import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
+import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -19,12 +33,33 @@ import {
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
 
-type Screen = 'projects' | 'new' | 'metadata' | 'checklist' | 'notes' | 'imports' | 'validation' | 'report';
+type Screen = 'projects' | 'new' | 'metadata' | 'actions' | 'checklist' | 'notes' | 'imports' | 'validation' | 'report';
 
 const SCREEN_LABEL: Record<Screen, string> = {
-  projects: 'All projects', new: 'New project', metadata: 'Metadata', checklist: 'Checklist',
+  projects: 'All projects', new: 'New project', metadata: 'Metadata', actions: 'Action Builder', checklist: 'Checklist',
   notes: 'Notes', imports: 'Imported text', validation: 'Validation', report: 'Report',
 };
+
+interface ActionBuilderState {
+  revisionLabel: string;
+  templateId: string;
+  values: Record<string, ActionFieldValue>;
+  output: MockGeneratedOutput | null;
+  savedBlockId: string | null;
+  attemptedGenerate: boolean;
+}
+
+function makeActionBuilderState(revisionLabel: string): ActionBuilderState {
+  const template = ACTION_TEMPLATES[0];
+  return {
+    revisionLabel,
+    templateId: template.id,
+    values: defaultActionValues(template),
+    output: null,
+    savedBlockId: null,
+    attemptedGenerate: false,
+  };
+}
 
 const state: {
   screen: Screen;
@@ -35,6 +70,7 @@ const state: {
   collapsed: Set<string>;
   blockEdit: Set<string>;
   highlightRef: string | null;
+  actionBuilder: ActionBuilderState;
 } = {
   screen: 'projects',
   summaries: [],
@@ -44,6 +80,7 @@ const state: {
   collapsed: new Set(),
   blockEdit: new Set(),
   highlightRef: null,
+  actionBuilder: makeActionBuilderState(''),
 };
 
 const uid = () => crypto.randomUUID();
@@ -87,7 +124,7 @@ function opt(value: string, label: string, current: string): string {
 function navRail(): string {
   if (!state.project) return '';
   const screens: [Screen, string][] = [
-    ['metadata', 'Metadata'], ['checklist', 'Checklist'], ['notes', 'Notes'],
+    ['metadata', 'Metadata'], ['actions', 'Action Builder'], ['checklist', 'Checklist'], ['notes', 'Notes'],
     ['imports', 'Imported text'], ['validation', 'Validation'], ['report', 'Report'],
   ];
   const items = screens
@@ -132,6 +169,7 @@ function render(): void {
     case 'projects': content = renderProjects(); break;
     case 'new': content = renderNew(); break;
     case 'metadata': content = renderMetadata(); break;
+    case 'actions': content = renderActions(); break;
     case 'checklist': content = renderChecklist(); break;
     case 'notes': content = renderNotes(); break;
     case 'imports': content = renderImports(); break;
@@ -249,6 +287,87 @@ function renderMetadata(): string {
         </div>
       </div>
     </div>`;
+}
+
+// --- Action Builder (Phase 1: mock output only) -----------------------------
+
+function renderActionField(field: ActionField, values: Record<string, ActionFieldValue>): string {
+  const value = values[field.key];
+  if (field.type === 'checkbox') {
+    const checked = Boolean(value ?? field.defaultValue ?? false);
+    return `<label class="row" style="margin-top:0.6rem"><input type="checkbox" data-bind="action.field" data-id="${attr(field.key)}" style="width:auto"${checked ? ' checked' : ''} /> &nbsp;${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
+  }
+  const labelHtml = `<label>${escapeHtml(field.label)}${field.required ? ' *' : ''}</label>`;
+  if (field.type === 'select') {
+    const current = String(value ?? field.options?.[0]?.value ?? '');
+    const opts = (field.options ?? []).map((o) => opt(o.value, o.label, current)).join('');
+    return `${labelHtml}<select data-bind="action.field" data-id="${attr(field.key)}" aria-label="${attr(field.label)}">${opts}</select>`;
+  }
+  if (field.type === 'number') {
+    return `${labelHtml}<input type="number" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? 0))}" aria-label="${attr(field.label)}" />`;
+  }
+  return `${labelHtml}<input type="text" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? ''))}" placeholder="${attr(field.placeholder ?? '')}" aria-label="${attr(field.label)}" />`;
+}
+
+function boxNameSheet(p: Project, output: MockGeneratedOutput, savedBlockId: string | null): string {
+  const rows = output.rows
+    .map(
+      (r, i) => `<tr>
+        <td>${escapeHtml(r.boxLabel)}</td>
+        <td>${escapeHtml(r.rowLabel)}</td>
+        <td><code>${escapeHtml(r.text)}</code></td>
+        <td><button class="btn small" data-action="copy-box-row" data-row="${i}">Copy row</button></td>
+      </tr>`,
+    )
+    .join('');
+  const saved = savedBlockId && p.importedBlocks.some((b) => b.id === savedBlockId)
+    ? `<p class="muted">Saved &#10003; <button class="btn small" data-action="jump" data-kind="importedBlock" data-ref="${attr(savedBlockId)}">View in Imported text</button></p>`
+    : '';
+  return `<div class="card" data-ref="mock-sheet">
+    <p class="badge warning" style="font-size:0.8rem">MOCK OUTPUT — placeholder only, not a real generator result</p>
+    <p class="muted">Action: ${escapeHtml(output.actionLabel)} · Revision: ${escapeHtml(output.revisionLabel || '—')} · Generated ${escapeHtml(output.generatedAt)}</p>
+    <table><thead><tr><th>Box</th><th>Row</th><th>Box name</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn" data-action="copy-all-box-rows">Copy all</button>
+      <button class="btn primary" data-action="save-mock-output">Save to project</button>
+    </div>
+    ${saved}
+  </div>`;
+}
+
+function renderActions(): string {
+  const p = state.project!;
+  const ab = state.actionBuilder;
+  const template = getActionTemplate(ab.templateId) ?? ACTION_TEMPLATES[0];
+  const templateOpts = ACTION_TEMPLATES.map((t) => opt(t.id, t.label, template.id)).join('');
+  const missing = ab.attemptedGenerate ? missingRequiredActionFields(template, ab.values) : [];
+  const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values)).join('');
+  const errorHtml = missing.length
+    ? `<p class="badge error" style="display:inline-block;margin-top:0.5rem">Missing required: ${missing.map((f) => escapeHtml(f.label)).join(', ')}</p>`
+    : '';
+  const sheetHtml = ab.output ? boxNameSheet(p, ab.output, ab.savedBlockId) : '';
+
+  return `<h1>Action Builder <span class="pill">mock / non-operational</span></h1>
+    <p class="muted">Choose a known action template, fill in its fields, and generate a mock box-name sheet. Output here is always a fixed placeholder — no real generator is connected in this phase.</p>
+    <div class="card">
+      <div class="grid2">
+        <div>
+          <label for="ab-revision">Revision label</label>
+          <input type="text" id="ab-revision" data-bind="action.revisionLabel" value="${attr(ab.revisionLabel)}" placeholder="e.g. Rev 1 (documentation only)" />
+        </div>
+        <div>
+          <label for="ab-template">Action template</label>
+          <select id="ab-template" data-bind="action.templateId">${templateOpts}</select>
+        </div>
+      </div>
+      <p class="muted">${escapeHtml(template.description)}</p>
+      ${fieldsHtml}
+      ${errorHtml}
+      <div class="row" style="margin-top:0.75rem">
+        <button class="btn primary" data-action="generate-mock-sheet">Generate mock sheet</button>
+      </div>
+    </div>
+    ${sheetHtml}`;
 }
 
 function stateSelect(item: ChecklistItem): string {
@@ -385,7 +504,7 @@ function renderBlock(b: ImportedTextBlock): string {
   const lineCount = numberLines(b.rawText).length;
 
   const s = b.source;
-  const provLine = `Source: <strong>${escapeHtml(SOURCE_TYPE_LABELS[s.type])}</strong> · imported ${escapeHtml(s.importedAt)}${s.filename ? ' · file: ' + escapeHtml(s.filename) : ''}`;
+  const provLine = `Source: <strong>${escapeHtml(SOURCE_TYPE_LABELS[s.type])}</strong> · imported ${escapeHtml(s.importedAt)}${s.filename ? ' · file: ' + escapeHtml(s.filename) : ''}${s.actionLabel ? ' · action: ' + escapeHtml(s.actionLabel) : ''}${s.generatedBy ? ' · generated by ' + escapeHtml(s.generatedBy) : ''}`;
 
   const bodyInner = collapsed
     ? ''
@@ -552,17 +671,18 @@ async function loadProject(id: string): Promise<void> {
   if (p) {
     state.project = p;
     state.screen = 'metadata';
-    resetViewState();
+    resetViewState(p.metadata.revisionLabel);
     render();
   }
 }
 
-function resetViewState(): void {
+function resetViewState(revisionLabel: string = ''): void {
   state.checklistFilter = 'all';
   state.findingGroup = 'severity';
   state.collapsed.clear();
   state.blockEdit.clear();
   state.highlightRef = null;
+  state.actionBuilder = makeActionBuilderState(revisionLabel);
 }
 
 function jumpTo(kind: TargetKind, ref: string | undefined): void {
@@ -613,7 +733,7 @@ async function handleClick(e: Event): Promise<void> {
       await putProject(project);
       state.project = project;
       state.screen = 'metadata';
-      resetViewState();
+      resetViewState(project.metadata.revisionLabel);
       await refreshSummaries();
       break;
     }
@@ -626,7 +746,7 @@ async function handleClick(e: Event): Promise<void> {
       await putProject(demo);
       state.project = demo;
       state.screen = 'metadata';
-      resetViewState();
+      resetViewState(demo.metadata.revisionLabel);
       await refreshSummaries();
       break;
     }
@@ -675,6 +795,70 @@ async function handleClick(e: Event): Promise<void> {
       const orig = el.textContent;
       el.textContent = ok ? 'Copied ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'generate-mock-sheet': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const template = getActionTemplate(ab.templateId);
+      if (!template) break;
+      ab.attemptedGenerate = true;
+      const missing = missingRequiredActionFields(template, ab.values);
+      if (missing.length > 0) {
+        render();
+        break;
+      }
+      const input: ActionInput = { actionId: template.id, revisionLabel: ab.revisionLabel, values: { ...ab.values } };
+      ab.output = MockGeneratorAdapter.generate(template, input, nowIso);
+      ab.savedBlockId = null;
+      render();
+      break;
+    }
+    case 'copy-box-row': {
+      const ab = state.actionBuilder;
+      const idx = Number(el.dataset.row);
+      const row = ab.output?.rows[idx];
+      if (!row) break;
+      const ok = await copyText(row.text);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'copy-all-box-rows': {
+      const ab = state.actionBuilder;
+      if (!ab.output) break;
+      const ok = await copyText(formatBoxNameSheetText(ab.output));
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'save-mock-output': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      if (!ab.output) break;
+      const now = nowIso();
+      const block: ImportedTextBlock = {
+        id: uid(),
+        title: `${ab.output.actionLabel} — mock output`,
+        categoryLabel: 'Mock output',
+        revisionLabel: ab.output.revisionLabel,
+        rawText: formatBoxNameSheetText(ab.output),
+        notes: '',
+        source: {
+          type: 'mock-output',
+          label: 'Mock generator output',
+          importedAt: now,
+          schemaVersion: SOURCE_SCHEMA_VERSION,
+          actionId: ab.output.actionId,
+          actionLabel: ab.output.actionLabel,
+          generatedBy: 'mock-generator-adapter',
+        },
+      };
+      p.importedBlocks.push(block);
+      ab.savedBlockId = block.id;
+      commit();
       break;
     }
     case 'add-checklist': {
@@ -783,7 +967,38 @@ async function handleChange(e: Event): Promise<void> {
   const input = t as HTMLInputElement;
   const value = input.value;
   const checked = input.type === 'checkbox' ? input.checked : undefined;
+  if (bind.startsWith('action.')) {
+    applyActionBinding(bind, id, value, checked);
+    render();
+    return;
+  }
   applyBinding(bind, id, value, checked);
+}
+
+function applyActionBinding(bind: string, id: string | undefined, value: string, checked: boolean | undefined): void {
+  const ab = state.actionBuilder;
+  switch (bind) {
+    case 'action.revisionLabel':
+      ab.revisionLabel = value;
+      break;
+    case 'action.templateId': {
+      const template = getActionTemplate(value) ?? ACTION_TEMPLATES[0];
+      ab.templateId = template.id;
+      ab.values = defaultActionValues(template);
+      ab.output = null;
+      ab.savedBlockId = null;
+      ab.attemptedGenerate = false;
+      break;
+    }
+    case 'action.field': {
+      if (!id) break;
+      const template = getActionTemplate(ab.templateId);
+      const field = template?.fields.find((f) => f.key === id);
+      if (!field) break;
+      ab.values[id] = coerceActionFieldValue(field, value, checked);
+      break;
+    }
+  }
 }
 
 function applyBinding(bind: string, id: string | undefined, value: string, checked: boolean | undefined): void {

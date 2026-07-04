@@ -282,6 +282,27 @@ export interface VariableCandidate {
   annotation?: string;
   inferredType: InferredFieldKind;
   confidence: CandidateConfidence;
+  /**
+   * True when a preceding full-line comment in the header (e.g. "Do not
+   * modify these values") marked this and subsequent header assignments as
+   * internal/helper values rather than user-facing input. Informational only
+   * — the scanner still reports these for transparency, but the schema
+   * builder should not include them by default.
+   */
+  internal: boolean;
+}
+
+/**
+ * A recognized `@key = value` or `@@key = value` header directive line —
+ * distinct from the exact `@@` marker line (which has no `= value` at all)
+ * and from candidate variable assignments. Metadata/documentation only,
+ * never exposed as a curated schema field.
+ */
+export interface ScriptDirective {
+  key: string;
+  rawValue: string;
+  /** 1-based line number within the script's header section. */
+  line: number;
 }
 
 /** The result of scanning one ScriptFile. Informational only. */
@@ -292,6 +313,12 @@ export interface ScriptScanResult {
   markerLine: number | null;
   sections: ScriptSection[];
   candidates: VariableCandidate[];
+  /** Every recognized header directive line (e.g. title/author/exit), in order. */
+  directives: ScriptDirective[];
+  /** Convenience shortcuts, unquoted, for the common `title`/`author`/`exit` directive keys. */
+  title?: string;
+  author?: string;
+  exit?: string;
 }
 
 /** One field in a draft action schema, derived from a single VariableCandidate. */

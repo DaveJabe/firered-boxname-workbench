@@ -15,6 +15,7 @@ import type {
   ScriptFile,
   ScriptScanResult,
   ScriptSection,
+  ScriptDirective,
   VariableCandidate,
   DraftActionSchema,
   CuratedActionSchema,
@@ -362,6 +363,8 @@ function parseVariableCandidate(v: unknown, path: string): VariableCandidate {
     line: asNumber(o.line, `${path}.line`),
     inferredType: asEnum(o.inferredType, INFERRED_FIELD_KINDS, `${path}.inferredType`),
     confidence: asEnum(o.confidence, CANDIDATE_CONFIDENCES, `${path}.confidence`),
+    // Older saved scans predate this field; default to not-internal.
+    internal: o.internal === undefined ? false : asBoolean(o.internal, `${path}.internal`),
   };
   const nearbyComment = asOptString(o.nearbyComment, `${path}.nearbyComment`);
   if (nearbyComment !== undefined) candidate.nearbyComment = nearbyComment;
@@ -370,16 +373,36 @@ function parseVariableCandidate(v: unknown, path: string): VariableCandidate {
   return candidate;
 }
 
+function parseScriptDirective(v: unknown, path: string): ScriptDirective {
+  const o = asObject(v, path);
+  return {
+    key: asString(o.key, `${path}.key`),
+    rawValue: asString(o.rawValue, `${path}.rawValue`),
+    line: asNumber(o.line, `${path}.line`),
+  };
+}
+
 function parseScriptScanResult(v: unknown, path: string): ScriptScanResult {
   const o = asObject(v, path);
   const markerLine = o.markerLine === null ? null : asNumber(o.markerLine, `${path}.markerLine`);
-  return {
+  const result: ScriptScanResult = {
     scriptId: asString(o.scriptId, `${path}.scriptId`),
     scannedAt: asString(o.scannedAt, `${path}.scannedAt`),
     markerLine,
     sections: asArray(o.sections, `${path}.sections`).map((s, i) => parseScriptSection(s, `${path}.sections[${i}]`)),
     candidates: asArray(o.candidates, `${path}.candidates`).map((c, i) => parseVariableCandidate(c, `${path}.candidates[${i}]`)),
+    // Older saved scans predate directives; default to an empty list.
+    directives: o.directives !== undefined
+      ? asArray(o.directives, `${path}.directives`).map((d, i) => parseScriptDirective(d, `${path}.directives[${i}]`))
+      : [],
   };
+  const title = asOptString(o.title, `${path}.title`);
+  if (title !== undefined) result.title = title;
+  const author = asOptString(o.author, `${path}.author`);
+  if (author !== undefined) result.author = author;
+  const exit = asOptString(o.exit, `${path}.exit`);
+  if (exit !== undefined) result.exit = exit;
+  return result;
 }
 
 function parseScriptFile(v: unknown, i: number): ScriptFile {

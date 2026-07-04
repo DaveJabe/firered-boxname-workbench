@@ -17,6 +17,7 @@ import type {
   FilledScriptResult,
   ParsedGeneratorOutput,
   GameTarget,
+  EsharkCategory,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -64,6 +65,16 @@ import {
   checkTargetCompatibility,
   isUnknownTarget,
 } from '../core/gameTarget.js';
+import {
+  SOURCE_PROFILE_INFO,
+  ESHARK_SETUP_NOTE,
+  ESHARK_SOURCE_PROFILES,
+  selectEsharkFiles,
+  displayRootPath,
+  parseEsharkListEntries,
+  lookupEsharkListEntry,
+  type SourceProfile,
+} from '../core/esharkSource.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -328,6 +339,8 @@ const state: {
   /** Manage Scripts: target metadata to apply to the next imported script folder. */
   pendingPackTarget: GameTarget;
   pendingPackTargetNotes: string;
+  /** Manage Scripts: which folder layout to assume for the next imported script folder. */
+  pendingSourceProfile: SourceProfile;
 } = {
   screen: 'actions',
   summaries: [],
@@ -344,6 +357,7 @@ const state: {
   scriptsSearch: '',
   pendingPackTarget: UNKNOWN_TARGET,
   pendingPackTargetNotes: '',
+  pendingSourceProfile: 'generic',
 };
 
 const uid = () => crypto.randomUUID();
@@ -395,6 +409,23 @@ function targetSelectsHtml(bindPrefix: string, target: GameTarget, idPrefix: str
   </div>
   <label for="${idPrefix}-rev">Revision</label>
   <select id="${idPrefix}-rev" data-bind="${bindPrefix}.revision">${revOpts}</select>`;
+}
+
+const SOURCE_PROFILE_OPTIONS: readonly SourceProfile[] = ['generic', ...ESHARK_SOURCE_PROFILES];
+
+/** Source-profile selector for folder import, with a plain-language explanation of the selected option. */
+function sourceProfileSelectHtml(): string {
+  const profile = state.pendingSourceProfile;
+  const options = SOURCE_PROFILE_OPTIONS.map(
+    (p) => `<option value="${p}"${p === profile ? ' selected' : ''}>${escapeHtml(SOURCE_PROFILE_INFO[p].label)}</option>`,
+  ).join('');
+  const setupNote = profile !== 'generic'
+    ? `<p class="muted" style="font-style:italic">${escapeHtml(ESHARK_SETUP_NOTE)}</p>`
+    : '';
+  return `<label for="pending-source-profile">Source</label>
+  <select id="pending-source-profile" data-bind="pendingSourceProfile">${options}</select>
+  <p class="muted">${escapeHtml(SOURCE_PROFILE_INFO[profile].description)}</p>
+  ${setupNote}`;
 }
 
 function navRail(): string {
@@ -1122,8 +1153,10 @@ function renderScriptCard(s: ScriptFile, project: Project): string {
     <div class="row" style="justify-content:space-between">
       <div class="row">
         <strong>${escapeHtml(s.filename)}</strong>
+        ${s.displayName ? `<span class="muted">"${escapeHtml(s.displayName)}"</span>` : ''}
         <span class="muted">${lineCount} line${lineCount === 1 ? '' : 's'}${s.relativePath ? ' · ' + escapeHtml(s.relativePath) : ''} · imported ${escapeHtml(s.importedAt)}</span>
         <span class="pill">${escapeHtml(targetLabel(effectiveTarget))}</span>
+        ${s.category ? `<span class="pill">${escapeHtml(s.category)}</span>` : ''}
       </div>
       <div class="row">
         <button class="btn small" data-action="run-scan" data-id="${attr(s.id)}">Run scanner</button>
@@ -1153,6 +1186,13 @@ function batchScanSummaryCard(summary: ReturnType<typeof summarizeBatchScan>): s
 function scriptPackCard(pack: ScriptPack, scripts: readonly ScriptFile[]): string {
   const packScripts = scripts.filter((s) => s.packId === pack.id);
   const unscanned = packScripts.filter((s) => !s.lastScan).length;
+  const esharkInfo = pack.sourceProfile
+    ? `<p class="muted">
+        Source: ${escapeHtml(SOURCE_PROFILE_INFO[pack.sourceProfile].label)}${pack.detectedRootPath ? ` · detected at "${escapeHtml(pack.detectedRootPath)}"` : ''}
+        · list.json ${pack.hasListJson ? 'found' : 'not found'}
+        ${pack.categoriesDetected && pack.categoriesDetected.length > 0 ? '· categories: ' + pack.categoriesDetected.map(escapeHtml).join(', ') : ''}
+      </p>`
+    : '';
   return `<div class="card ext-tool">
     <div class="row" style="justify-content:space-between">
       <div class="row">
@@ -1161,6 +1201,7 @@ function scriptPackCard(pack: ScriptPack, scripts: readonly ScriptFile[]): strin
       </div>
       <span class="muted">${packScripts.length} script(s)${pack.sourceFolderName ? ' · from folder "' + escapeHtml(pack.sourceFolderName) + '"' : ''} · imported ${escapeHtml(pack.importedAt)}</span>
     </div>
+    ${esharkInfo}
     ${pack.targetNotes ? `<p class="muted">${escapeHtml(pack.targetNotes)}</p>` : ''}
     <button class="btn small" data-action="scan-all-in-pack" data-id="${attr(pack.id)}"${packScripts.length === 0 ? ' disabled' : ''}>${unscanned > 0 ? `Scan all scripts (${unscanned} unscanned)` : 'Re-scan all scripts'}</button>
   </div>`;
@@ -1191,6 +1232,7 @@ function scriptSummaryTable(rows: ScriptPackRow[]): string {
         <td>${r.relativePath ? escapeHtml(r.relativePath) : '—'}</td>
         <td>${r.title ? escapeHtml(r.title) : '—'}</td>
         <td>${escapeHtml(targetLabel(r.target))}</td>
+        <td>${r.category ? escapeHtml(r.category) : '—'}</td>
         <td>${r.candidateCount}</td>
         <td>${r.userFacingCandidateCount}</td>
         <td>${r.internalCandidateCount}</td>
@@ -1199,7 +1241,7 @@ function scriptSummaryTable(rows: ScriptPackRow[]): string {
       </tr>`,
     )
     .join('');
-  return `<table><thead><tr><th>Filename</th><th>Relative path</th><th>Title</th><th>Target</th><th>Candidates</th><th>User-facing</th><th>Internal/helper</th><th>Schema attached</th><th></th></tr></thead><tbody>${trs}</tbody></table>`;
+  return `<table><thead><tr><th>Filename</th><th>Relative path</th><th>Title</th><th>Target</th><th>Category</th><th>Candidates</th><th>User-facing</th><th>Internal/helper</th><th>Schema attached</th><th></th></tr></thead><tbody>${trs}</tbody></table>`;
 }
 
 function renderScripts(): string {
@@ -1239,6 +1281,7 @@ function renderScripts(): string {
     </div>
     <div class="card">
       <h3>Import script folder</h3>
+      ${sourceProfileSelectHtml()}
       <p class="muted">Set the target for scripts in the next folder you import — leave Unknown/Mixed if you're not sure, or the folder mixes targets. Each script can override this individually later.</p>
       ${targetSelectsHtml('pendingPackTarget', state.pendingPackTarget, 'pending-pack-target')}
       <label for="pending-pack-target-notes">Target notes (optional)</label>
@@ -1568,6 +1611,7 @@ function resetViewState(project: Project): void {
   state.scriptsSearch = '';
   state.pendingPackTarget = UNKNOWN_TARGET;
   state.pendingPackTargetNotes = '';
+  state.pendingSourceProfile = 'generic';
 }
 
 /**
@@ -2135,6 +2179,11 @@ async function handleChange(e: Event): Promise<void> {
     render();
     return;
   }
+  if (bind === 'pendingSourceProfile') {
+    state.pendingSourceProfile = value as SourceProfile;
+    render();
+    return;
+  }
   applyBinding(bind, id, value, checked);
 }
 
@@ -2338,23 +2387,40 @@ async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
   const p = state.project;
   if (!files.length || !p) return;
 
-  const collected: CollectedFile[] = [];
+  const allCollected: CollectedFile[] = [];
   for (const file of files) {
     const relativePath = file.webkitRelativePath || file.name;
     if (!isRelevantPackFile(relativePath)) continue;
     const text = await readFileText(file);
-    collected.push({ relativePath, text });
+    allCollected.push({ relativePath, text });
   }
 
-  const { scripts } = collectScriptPackFiles(collected);
+  const profile = state.pendingSourceProfile;
+  let collected = allCollected;
+  let detectedRoot: string | undefined;
+  if (profile !== 'generic') {
+    const selection = selectEsharkFiles(allCollected);
+    if (!selection) {
+      window.alert(
+        'No files_frlg folder was found in that selection. Select the files_frlg folder itself, or a folder that contains it (like the offline app or repo folder), then try again.',
+      );
+      return;
+    }
+    detectedRoot = selection.root;
+    collected = selection.files;
+  }
+
+  const { scripts, metadata, hasMetadataFile, metadataParseError } = collectScriptPackFiles(collected);
   if (scripts.length === 0) {
     window.alert('No .txt scripts found in that folder.');
     return;
   }
+  const listEntries = parseEsharkListEntries(metadata);
 
   const now = nowIso();
   const packId = uid();
   const scriptIds: string[] = [];
+  const categoriesDetected = new Set<EsharkCategory>();
   for (const cs of scripts) {
     const scriptId = uid();
     scriptIds.push(scriptId);
@@ -2366,6 +2432,14 @@ async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
       relativePath: cs.relativePath,
       packId,
     };
+    if (profile !== 'generic') {
+      if (cs.category) {
+        scriptFile.category = cs.category;
+        categoriesDetected.add(cs.category);
+      }
+      const listEntry = lookupEsharkListEntry(listEntries, cs.filename);
+      if (listEntry?.displayName) scriptFile.displayName = listEntry.displayName;
+    }
     p.scripts.push(scriptFile);
   }
   const sourceFolderName = detectSourceFolderName(collected);
@@ -2379,8 +2453,18 @@ async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
   if (sourceFolderName) pack.sourceFolderName = sourceFolderName;
   const targetNotes = state.pendingPackTargetNotes.trim();
   if (targetNotes) pack.targetNotes = targetNotes;
+  if (profile !== 'generic') {
+    pack.sourceProfile = profile;
+    pack.detectedRootPath = displayRootPath(detectedRoot!);
+    pack.hasListJson = hasMetadataFile;
+    pack.categoriesDetected = Array.from(categoriesDetected).sort();
+  }
   p.scriptPacks.push(pack);
   commit();
+
+  if (profile !== 'generic' && hasMetadataFile && metadataParseError) {
+    window.alert('list.json was found but could not be parsed as JSON — it was ignored. Scripts still imported normally.');
+  }
 }
 
 async function handleCuratedSchemaFile(input: HTMLInputElement): Promise<void> {

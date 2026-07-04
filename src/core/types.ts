@@ -401,7 +401,17 @@ export interface ScriptFile {
   packId?: string;
   /** Overrides the owning pack's defaultTarget for this specific script, if set. See GameTarget below. */
   targetOverride?: GameTarget;
+  /** Detected E-Sh4rk files_frlg subfolder (misc/pkmn/rng), if imported via an E-Sh4rk source profile. */
+  category?: EsharkCategory;
+  /** Display name read from the pack's list.json, if present and recognized — informational only. */
+  displayName?: string;
 }
+
+/** Recognized E-Sh4rk `files_frlg` subfolder a script was imported from. */
+export type EsharkCategory = 'misc' | 'pkmn' | 'rng';
+
+/** Which local E-Sh4rk folder layout a script pack was detected from. See core/esharkSource.ts. */
+export type EsharkSourceProfile = 'eshark-files-frlg' | 'eshark-offline-app';
 
 // --- Script packs (batch "import script folder") ----------------------------
 //
@@ -420,6 +430,14 @@ export interface ScriptPack {
   targetNotes?: string;
   /** Ids into Project.scripts for the scripts imported as part of this pack. */
   scriptIds: readonly string[];
+  /** Set when this pack was imported via an E-Sh4rk source profile rather than a generic folder. */
+  sourceProfile?: EsharkSourceProfile;
+  /** Relative path (never absolute) to the detected files_frlg folder within the user's selection. */
+  detectedRootPath?: string;
+  /** Whether a list.json manifest was found alongside the scripts (whether or not it parsed). */
+  hasListJson?: boolean;
+  /** Which files_frlg subfolders (misc/pkmn/rng) were detected among the imported scripts. */
+  categoriesDetected?: readonly EsharkCategory[];
 }
 
 // --- Curated action schemas (mock mode only) --------------------------------

@@ -90,6 +90,8 @@ describe('collectScriptPackFiles', () => {
   it('parses a recognized list.json metadata file, if present', () => {
     const result = collectScriptPackFiles(makeSimulatedFolder());
     expect(result.metadata).toEqual({ note: 'toy manifest' });
+    expect(result.hasMetadataFile).toBe(true);
+    expect(result.metadataParseError).toBe(false);
   });
 
   it('ignores non-script, non-metadata files, counting them but not collecting them', () => {
@@ -97,10 +99,21 @@ describe('collectScriptPackFiles', () => {
     expect(result.ignoredCount).toBe(1);
   });
 
-  it('does not fail when list.json is malformed — just leaves metadata undefined', () => {
-    const result = collectScriptPackFiles([{ relativePath: 'list.json', text: 'not valid json {' }]);
+  it('does not fail when list.json is malformed — just leaves metadata undefined and flags the parse error non-fatally', () => {
+    const result = collectScriptPackFiles([
+      { relativePath: 'list.json', text: 'not valid json {' },
+      { relativePath: 'still-imports.txt', text: 'x = 1\n@@\nbody' },
+    ]);
     expect(result.metadata).toBeUndefined();
-    expect(result.scripts).toEqual([]);
+    expect(result.hasMetadataFile).toBe(true);
+    expect(result.metadataParseError).toBe(true);
+    expect(result.scripts).toHaveLength(1);
+  });
+
+  it('reports no metadata file at all when none is present', () => {
+    const result = collectScriptPackFiles([{ relativePath: 'flat-script.txt', text: 'x = 1\n@@\nbody' }]);
+    expect(result.hasMetadataFile).toBe(false);
+    expect(result.metadataParseError).toBe(false);
   });
 });
 
@@ -176,6 +189,14 @@ describe('buildScriptPackRows', () => {
     expect(rowB.userFacingCandidateCount).toBe(0);
     expect(rowB.internalCandidateCount).toBe(1);
     expect(rowB.hasSchema).toBe(false);
+  });
+
+  it('carries a script\'s detected E-Sh4rk category into its row, and leaves it undefined otherwise', () => {
+    const withCategory = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', category: 'pkmn' });
+    const withoutCategory = makeScript({ id: 'b', filename: 'b.txt', rawText: 'x = 1\n@@\nbody' });
+    const rows = buildScriptPackRows([withCategory, withoutCategory], []);
+    expect(rows.find((r) => r.scriptId === 'a')?.category).toBe('pkmn');
+    expect(rows.find((r) => r.scriptId === 'b')?.category).toBeUndefined();
   });
 });
 

@@ -26,6 +26,7 @@ import type {
 } from '../core/types.js';
 import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/sources.js';
 import { TARGET_GAMES, TARGET_LANGUAGES, TARGET_REVISIONS, UNKNOWN_TARGET } from '../core/gameTarget.js';
+import { ESHARK_CATEGORIES, ESHARK_SOURCE_PROFILES } from '../core/esharkSource.js';
 
 const DB_NAME = 'firered-research-notebook';
 const STORE = 'projects';
@@ -187,6 +188,9 @@ function asOptNumber(v: unknown, path: string): number | undefined {
 function asBoolean(v: unknown, path: string): boolean {
   if (typeof v !== 'boolean') fail(`${path} must be a boolean.`);
   return v;
+}
+function asOptBoolean(v: unknown, path: string): boolean | undefined {
+  return v === undefined ? undefined : asBoolean(v, path);
 }
 function asArray(v: unknown, path: string): unknown[] {
   if (!Array.isArray(v)) fail(`${path} must be an array.`);
@@ -448,6 +452,11 @@ function parseScriptFile(v: unknown, i: number): ScriptFile {
   if (o.targetOverride !== undefined && o.targetOverride !== null) {
     script.targetOverride = parseGameTarget(o.targetOverride, `${path}.targetOverride`);
   }
+  if (o.category !== undefined && o.category !== null) {
+    script.category = asEnum(o.category, ESHARK_CATEGORIES, `${path}.category`);
+  }
+  const displayName = asOptString(o.displayName, `${path}.displayName`);
+  if (displayName !== undefined) script.displayName = displayName;
   return script;
 }
 
@@ -465,6 +474,18 @@ function parseScriptPack(v: unknown, i: number): ScriptPack {
   if (sourceFolderName !== undefined) pack.sourceFolderName = sourceFolderName;
   const targetNotes = asOptString(o.targetNotes, `${path}.targetNotes`);
   if (targetNotes !== undefined) pack.targetNotes = targetNotes;
+  if (o.sourceProfile !== undefined && o.sourceProfile !== null) {
+    pack.sourceProfile = asEnum(o.sourceProfile, ESHARK_SOURCE_PROFILES, `${path}.sourceProfile`);
+  }
+  const detectedRootPath = asOptString(o.detectedRootPath, `${path}.detectedRootPath`);
+  if (detectedRootPath !== undefined) pack.detectedRootPath = detectedRootPath;
+  const hasListJson = asOptBoolean(o.hasListJson, `${path}.hasListJson`);
+  if (hasListJson !== undefined) pack.hasListJson = hasListJson;
+  if (o.categoriesDetected !== undefined) {
+    pack.categoriesDetected = asArray(o.categoriesDetected, `${path}.categoriesDetected`).map(
+      (c, ci) => asEnum(c, ESHARK_CATEGORIES, `${path}.categoriesDetected[${ci}]`),
+    );
+  }
   return pack;
 }
 

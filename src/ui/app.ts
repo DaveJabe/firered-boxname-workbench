@@ -1602,7 +1602,15 @@ async function startNewWorkspace(origin: WorkspaceOrigin): Promise<void> {
  */
 async function openDefaultWorkspace(): Promise<void> {
   const recent = mostRecentWorkspace(state.summaries);
-  let project = recent ? await getProject(recent.id) : null;
+  let project: Project | undefined;
+  try {
+    project = recent ? await getProject(recent.id) : undefined;
+  } catch {
+    // A stored workspace that genuinely can't be migrated (e.g. corrupted)
+    // must never block the app from rendering at all — fall through and
+    // start a fresh one instead of leaving the screen blank.
+    project = undefined;
+  }
   if (!project) {
     project = createProject(
       { revisionLabel: '', languageLabel: '', projectTitle: '', mode: 'documentation', templateKey: TEMPLATES[0].key },

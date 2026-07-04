@@ -71,9 +71,16 @@ export async function putProject(project: Project): Promise<void> {
   await tx('readwrite', (store) => store.put(project));
 }
 
+/**
+ * IndexedDB stores whatever shape was last written — including by an older
+ * version of this app, before fields like scriptPacks/target/actionKey
+ * existed. Route every read through the same deep-parse/default logic as
+ * a JSON import so old local data migrates cleanly instead of crashing
+ * the render on a missing field.
+ */
 export async function getProject(id: string): Promise<Project | undefined> {
   const result = await tx<Project | undefined>('readonly', (store) => store.get(id));
-  return result ?? undefined;
+  return result ? parseProject(result) : undefined;
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -81,16 +88,26 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
-  const all = await tx<Project[]>('readonly', (store) => store.getAll());
-  return all
-    .map((p) => ({
+  const all = await tx<unknown[]>('readonly', (store) => store.getAll());
+  const summaries: ProjectSummary[] = [];
+  for (const raw of all) {
+    let p: Project;
+    try {
+      p = parseProject(raw);
+    } catch {
+      // Skip a single corrupted/unparseable stored record rather than
+      // failing the whole recent-workspaces list.
+      continue;
+    }
+    summaries.push({
       id: p.id,
       title: p.metadata.projectTitle || '(untitled)',
       revisionLabel: p.metadata.revisionLabel,
       status: p.projectStatus,
       updatedAt: p.metadata.updatedAt,
-    }))
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    });
+  }
+  return summaries.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 // --- JSON export / import (local files only) --------------------------------
@@ -555,7 +572,7 @@ export function importCuratedActionSchemaJson(text: string): CuratedActionSchema
   return parseCuratedActionSchema(parsed, 'root');
 }
 
-function parseProject(v: unknown): Project {
+export function parseProject(v: unknown): Project {
   const o = asObject(v, 'root');
   if (o.schemaVersion !== 1) fail('schemaVersion must be 1.');
   return {

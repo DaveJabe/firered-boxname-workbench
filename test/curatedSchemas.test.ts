@@ -140,7 +140,7 @@ describe('attaching a curated schema to a script', () => {
     expect(roundTripped.curatedSchemas[0].fields.map((f) => f.variableName)).toEqual(['widgetCount', 'widgetLabel']);
   });
 
-  it('finds a schema attached to a script by scriptId, the way the Script Library UI does', () => {
+  it('finds a schema attached to a script by scriptId, the way the Scripts UI does', () => {
     const project = createProject(
       { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
       makeIdGen(),

@@ -25,6 +25,8 @@ export function toActionTemplateShape(schema: CuratedActionSchema): ActionTempla
       required: f.required,
       options: f.options,
       defaultValue: f.defaultValue,
+      min: f.min,
+      max: f.max,
     })),
   };
 }

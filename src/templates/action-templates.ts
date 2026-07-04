@@ -19,6 +19,9 @@ export interface ActionField {
   /** Only meaningful for type 'select'. Values are neutral placeholders. */
   options?: readonly ActionFieldOption[];
   defaultValue?: ActionFieldValue;
+  /** Only meaningful for type 'number'. Display-only range hint — never enforced or evaluated. */
+  min?: number;
+  max?: number;
 }
 
 export interface ActionTemplate {

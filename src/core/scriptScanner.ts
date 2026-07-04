@@ -27,8 +27,9 @@ const ASSIGNMENT = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 const DIRECTIVE = /^\s*@{1,2}\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
 const COMMENT_LINE = /^\s*(?:;|#|\/\/)\s*(.*)$/;
 const ANNOTATION = /@input:([a-zA-Z0-9_]+)/;
-/** A `@input:xxx` tag appearing directly after a value with no semicolon, e.g. `Move = 325 @input:move`. */
-const INLINE_ANNOTATION = /(?:^|\s)(@input:[a-zA-Z0-9_]+)\s*$/;
+/** A `@input:xxx` tag appearing directly after a value with no semicolon, e.g. `Move = 325 @input:move`.
+ *  Exported so the script filler can preserve it as trailing content too, rather than swallowing it as part of the value. */
+export const INLINE_ANNOTATION = /(?:^|\s)(@input:[a-zA-Z0-9_]+)\s*$/;
 /** A preceding full-line comment marking following header assignments as internal/helper, not user-facing. */
 const DO_NOT_MODIFY = /do\s*not\s*modify|don'?t\s*modify|do\s*not\s*(?:edit|change)/i;
 
@@ -121,6 +122,9 @@ function scanHeaderCandidates(headerLines: string[]): VariableCandidate[] {
     const annotationMatch = inlineAnnotation
       ? undefined
       : ANNOTATION.exec(`${trailingComment ?? ''} ${precedingComment ?? ''}`);
+    const inputHint = inlineAnnotation
+      ? /^@input:(.+)$/.exec(inlineAnnotation)?.[1]
+      : annotationMatch?.[1];
     const annotation = inlineAnnotation ?? (annotationMatch ? `@input:${annotationMatch[1]}` : undefined);
 
     const inferredType = inferFieldType(rawValue);
@@ -134,6 +138,7 @@ function scanHeaderCandidates(headerLines: string[]): VariableCandidate[] {
     };
     if (nearbyComment !== undefined) candidate.nearbyComment = nearbyComment;
     if (annotation !== undefined) candidate.annotation = annotation;
+    if (inputHint !== undefined) candidate.inputHint = inputHint;
     candidates.push(candidate);
   }
   return candidates;

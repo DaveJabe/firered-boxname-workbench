@@ -19,7 +19,11 @@ import { findMarkerLineIndex } from './scriptScanner.js';
 import { toActionTemplateShape } from './curatedSchemas.js';
 import { missingRequiredActionFields } from './actionInput.js';
 
-const ASSIGNMENT_LINE = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)([^;]*?)(\s*(?:;.*)?)$/;
+// The trailing group also accepts a bare `@input:xxx` annotation (no
+// semicolon), e.g. `Move = 325 @input:move`, so that substituting the value
+// preserves the annotation as trailing content instead of swallowing it —
+// matching the scanner's own INLINE_ANNOTATION recognition.
+const ASSIGNMENT_LINE = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)([^;]*?)(\s*(?:;.*|@input:[a-zA-Z0-9_]+\s*)?)$/;
 
 function formatValue(type: string, value: ActionFieldValue): string {
   if (type === 'text') return `"${String(value).replace(/"/g, '\\"')}"`;

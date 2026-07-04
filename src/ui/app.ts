@@ -10,7 +10,10 @@ import type {
   MockGeneratedOutput,
   ScriptFile,
   ScriptScanResult,
+  VariableCandidate,
   DraftActionSchema,
+  CuratedActionSchema,
+  CuratedSchemaField,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -20,11 +23,12 @@ import { numberLines } from '../core/normalize.js';
 import { SOURCE_TYPE_LABELS, SOURCE_SCHEMA_VERSION, SELECTABLE_SOURCE_TYPES, SOURCE_FIELD_MAX } from '../core/sources.js';
 import { renderReportHtml } from '../report/report.js';
 import { TEMPLATES } from '../templates/checklist-templates.js';
-import { ACTION_TEMPLATES, getActionTemplate, type ActionField } from '../templates/action-templates.js';
+import { ACTION_TEMPLATES, getActionTemplate, type ActionField, type ActionTemplate } from '../templates/action-templates.js';
 import { defaultActionValues, coerceActionFieldValue, missingRequiredActionFields } from '../core/actionInput.js';
 import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
 import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
 import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
+import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision } from '../core/curatedSchemas.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -48,7 +52,10 @@ const SCREEN_LABEL: Record<Screen, string> = {
 
 interface ActionBuilderState {
   revisionLabel: string;
+  /** Whether fields come from the built-in mock catalog or a curated schema — mock mode either way. */
+  source: 'builtin' | 'curated';
   templateId: string;
+  curatedSchemaId: string;
   values: Record<string, ActionFieldValue>;
   output: MockGeneratedOutput | null;
   savedBlockId: string | null;
@@ -59,12 +66,31 @@ function makeActionBuilderState(revisionLabel: string): ActionBuilderState {
   const template = ACTION_TEMPLATES[0];
   return {
     revisionLabel,
+    source: 'builtin',
     templateId: template.id,
+    curatedSchemaId: '',
     values: defaultActionValues(template),
     output: null,
     savedBlockId: null,
     attemptedGenerate: false,
   };
+}
+
+/** Resolve the Action Builder's currently-selected field source to a common
+ *  ActionTemplate shape, whichever it came from. `curatedUnavailable` is true
+ *  only when curated mode is selected but no selectable schema exists — in
+ *  that case `template` is a harmless fallback and must not be used to generate. */
+function resolveActionDefinition(
+  ab: ActionBuilderState,
+  project: Project,
+): { template: ActionTemplate; curated: CuratedActionSchema | null; curatedUnavailable: boolean } {
+  if (ab.source === 'curated') {
+    const schema = resolveCuratedSchema(project.curatedSchemas, ab.curatedSchemaId);
+    if (schema) return { template: toActionTemplateShape(schema), curated: schema, curatedUnavailable: false };
+    return { template: ACTION_TEMPLATES[0], curated: null, curatedUnavailable: true };
+  }
+  const t = getActionTemplate(ab.templateId) ?? ACTION_TEMPLATES[0];
+  return { template: t, curated: null, curatedUnavailable: false };
 }
 
 const state: {
@@ -342,20 +368,49 @@ function boxNameSheet(p: Project, output: MockGeneratedOutput, savedBlockId: str
   </div>`;
 }
 
+function curatedFieldExtra(field: CuratedSchemaField | undefined): string {
+  if (!field) return '';
+  const warnings = (field.warnings ?? [])
+    .map((w) => `<div class="muted">⚠ ${escapeHtml(w)}</div>`)
+    .join('');
+  return `<div class="muted" style="margin:0.1rem 0 0.5rem">
+    maps to script variable <code>${escapeHtml(field.variableName)}</code>${field.helpText ? ' · ' + escapeHtml(field.helpText) : ''}
+  </div>${warnings}`;
+}
+
+function renderCuratedSchemaSourceField(project: Project, curated: CuratedActionSchema | null): string {
+  const selectable = project.curatedSchemas.filter(isSchemaSelectable);
+  if (selectable.length === 0) {
+    return `<p class="muted">No curated schemas yet. <button class="btn small" data-action="nav" data-screen="scripts">Go to Script Library</button></p>`;
+  }
+  const currentId = curated?.id ?? selectable[0].id;
+  const opts = selectable.map((s) => opt(s.id, `${s.label} (${s.status})`, currentId)).join('');
+  return `<label for="ab-curated">Curated schema</label><select id="ab-curated" data-bind="action.curatedSchemaId">${opts}</select>`;
+}
+
 function renderActions(): string {
   const p = state.project!;
   const ab = state.actionBuilder;
-  const template = getActionTemplate(ab.templateId) ?? ACTION_TEMPLATES[0];
+  const { template, curated, curatedUnavailable } = resolveActionDefinition(ab, p);
   const templateOpts = ACTION_TEMPLATES.map((t) => opt(t.id, t.label, template.id)).join('');
-  const missing = ab.attemptedGenerate ? missingRequiredActionFields(template, ab.values) : [];
-  const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values)).join('');
+  const sourceOpts = `${opt('builtin', 'Built-in mock template', ab.source)}${opt('curated', 'Curated schema (Script Library)', ab.source)}`;
+
+  const missing = ab.attemptedGenerate && !curatedUnavailable ? missingRequiredActionFields(template, ab.values) : [];
+  const curatedByKey = new Map((curated?.fields ?? []).map((f) => [f.key, f]));
+  const fieldsHtml = curatedUnavailable
+    ? ''
+    : template.fields.map((f) => renderActionField(f, ab.values) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
   const errorHtml = missing.length
     ? `<p class="badge error" style="display:inline-block;margin-top:0.5rem">Missing required: ${missing.map((f) => escapeHtml(f.label)).join(', ')}</p>`
     : '';
   const sheetHtml = ab.output ? boxNameSheet(p, ab.output, ab.savedBlockId) : '';
 
+  const curatedStatusLine = curated
+    ? `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span>${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`
+    : '';
+
   return `<h1>Action Builder <span class="pill">mock / non-operational</span></h1>
-    <p class="muted">Choose a known action template, fill in its fields, and generate a mock box-name sheet. Output here is always a fixed placeholder — no real generator is connected in this phase.</p>
+    <p class="muted">Choose a known action template or a curated schema, fill in its fields, and generate a mock box-name sheet. Output here is always a fixed placeholder — no real generator is connected in this phase.</p>
     <div class="card">
       <div class="grid2">
         <div>
@@ -363,15 +418,19 @@ function renderActions(): string {
           <input type="text" id="ab-revision" data-bind="action.revisionLabel" value="${attr(ab.revisionLabel)}" placeholder="e.g. Rev 1 (documentation only)" />
         </div>
         <div>
-          <label for="ab-template">Action template</label>
-          <select id="ab-template" data-bind="action.templateId">${templateOpts}</select>
+          <label for="ab-source">Field source</label>
+          <select id="ab-source" data-bind="action.source">${sourceOpts}</select>
         </div>
       </div>
-      <p class="muted">${escapeHtml(template.description)}</p>
+      ${ab.source === 'builtin'
+        ? `<label for="ab-template">Action template</label><select id="ab-template" data-bind="action.templateId">${templateOpts}</select>`
+        : renderCuratedSchemaSourceField(p, curated)}
+      ${curatedStatusLine}
+      ${curatedUnavailable ? '' : `<p class="muted">${escapeHtml(template.description)}</p>`}
       ${fieldsHtml}
       ${errorHtml}
       <div class="row" style="margin-top:0.75rem">
-        <button class="btn primary" data-action="generate-mock-sheet">Generate mock sheet</button>
+        <button class="btn primary" data-action="generate-mock-sheet"${curatedUnavailable ? ' disabled' : ''}>Generate mock sheet</button>
       </div>
     </div>
     ${sheetHtml}`;
@@ -400,18 +459,41 @@ function draftSchemaList(schema: DraftActionSchema): string {
   return `<ul>${items || '<li class="muted">No candidate fields to draft.</li>'}</ul>`;
 }
 
-function renderCuratedSchema(schema: DraftActionSchema): string {
+function curatedSchemaFieldRow(f: CuratedSchemaField, candidatesByName: Map<string, VariableCandidate>): string {
+  const cand = candidatesByName.get(f.variableName);
+  const warnings = (f.warnings ?? []).map((w) => escapeHtml(w)).join('; ');
+  return `<tr>
+    <td>${escapeHtml(f.label)}</td>
+    <td>${escapeHtml(f.type)}</td>
+    <td>${f.required ? 'required' : 'optional'}</td>
+    <td><code>${escapeHtml(f.variableName)}</code></td>
+    <td>${cand ? `<code>${escapeHtml(cand.rawValue)}</code> (${escapeHtml(cand.inferredType)}, ${escapeHtml(cand.confidence)})` : '<span class="muted">no matching scan candidate</span>'}</td>
+    <td>${f.helpText ? escapeHtml(f.helpText) : '—'}</td>
+    <td>${warnings ? `<span class="badge warning">${warnings}</span>` : '—'}</td>
+  </tr>`;
+}
+
+function renderCuratedSchemaCard(schema: CuratedActionSchema, candidates: readonly VariableCandidate[]): string {
+  const candidatesByName = new Map(candidates.map((c) => [c.name, c]));
+  const rows = schema.fields.map((f) => curatedSchemaFieldRow(f, candidatesByName)).join('');
   return `<div class="card ext-tool">
-    <p class="muted"><strong>Curated schema imported</strong> ${escapeHtml(schema.generatedAt)} — still informational only; not connected to any action template or generator.</p>
-    ${draftSchemaList(schema)}
+    <div class="row" style="justify-content:space-between">
+      <strong>${escapeHtml(schema.label)}</strong>
+      <span class="pill status-${escapeHtml(schema.status)}">${escapeHtml(schema.status)}</span>
+    </div>
+    <p class="muted">${escapeHtml(schema.description)}</p>
+    ${schema.supportedRevisionLabels.length ? `<p class="muted">Supported revisions: ${schema.supportedRevisionLabels.map((r) => escapeHtml(r)).join(', ')}</p>` : ''}
+    <table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Variable</th><th>Scan candidate</th><th>Help</th><th>Warnings</th></tr></thead><tbody>${rows}</tbody></table>
   </div>`;
 }
 
-function renderScanResult(script: ScriptFile, scan: ScriptScanResult): string {
+function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: Project): string {
   const header = scan.sections.find((s) => s.kind === 'header');
   const body = scan.sections.find((s) => s.kind === 'body');
   const rows = scan.candidates.map(candidateRow).join('');
   const schema = buildDraftActionSchema(script, scan, nowIso);
+  const attachedSchemas = project.curatedSchemas.filter((s) => s.scriptId === script.id);
+  const attachedHtml = attachedSchemas.map((s) => renderCuratedSchemaCard(s, scan.candidates)).join('');
   return `<div class="card" style="border-color:#e0a458;background:#fffaf2">
     <p class="muted">Scanned ${escapeHtml(scan.scannedAt)} · marker line: ${scan.markerLine ?? 'not found'}</p>
     <p class="muted">Header: ${header ? numberLines(header.text).length : 0} line(s) · Body: ${body ? numberLines(body.text).length : 0} line(s)</p>
@@ -423,14 +505,15 @@ function renderScanResult(script: ScriptFile, scan: ScriptScanResult): string {
     ${draftSchemaList(schema)}
     <div class="row" style="margin-top:0.5rem">
       <button class="btn small" data-action="export-draft-schema" data-id="${attr(script.id)}">Export draft schema (.json)</button>
-      <button class="btn small" data-action="import-curated-schema" data-id="${attr(script.id)}">Import curated schema (.json)</button>
-      <input type="file" accept="application/json" data-action="curated-schema-file" data-id="${attr(script.id)}" id="curated-schema-input-${attr(script.id)}" style="display:none" aria-label="Import curated action schema JSON" />
+      <button class="btn small" data-action="attach-curated-schema" data-id="${attr(script.id)}">Attach curated schema (.json)</button>
+      <input type="file" accept="application/json" data-action="curated-schema-file" data-id="${attr(script.id)}" id="curated-schema-input-${attr(script.id)}" style="display:none" aria-label="Attach curated action schema JSON" />
     </div>
-    ${script.curatedSchema ? renderCuratedSchema(script.curatedSchema) : ''}
+    <h3>Curated schemas for this script</h3>
+    ${attachedHtml || '<div class="empty">No curated schemas attached yet.</div>'}
   </div>`;
 }
 
-function renderScriptCard(s: ScriptFile): string {
+function renderScriptCard(s: ScriptFile, project: Project): string {
   const lineCount = numberLines(s.rawText).length;
   return `<div class="card" data-ref="${attr(s.id)}">
     <div class="row" style="justify-content:space-between">
@@ -447,13 +530,13 @@ function renderScriptCard(s: ScriptFile): string {
     <input type="text" data-bind="script.notes" data-id="${attr(s.id)}" value="${attr(s.notes ?? '')}" placeholder="Optional notes about this script" aria-label="Script notes" />
     <label>Script text (read-only, stored verbatim)</label>
     ${lineNumberView(s.rawText)}
-    ${s.lastScan ? renderScanResult(s, s.lastScan) : ''}
+    ${s.lastScan ? renderScanResult(s, s.lastScan, project) : ''}
   </div>`;
 }
 
 function renderScripts(): string {
   const p = state.project!;
-  const scripts = p.scripts.map(renderScriptCard).join('');
+  const scripts = p.scripts.map((s) => renderScriptCard(s, p)).join('');
   return `<h1>Script Library <span class="pill">developer-only, informational</span></h1>
     <p class="muted">Import local .txt action scripts to inspect them as plain text. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
     ${scripts || '<div class="empty">No scripts imported yet.</div>'}
@@ -894,8 +977,8 @@ async function handleClick(e: Event): Promise<void> {
     case 'generate-mock-sheet': {
       if (!p) break;
       const ab = state.actionBuilder;
-      const template = getActionTemplate(ab.templateId);
-      if (!template) break;
+      const { template, curatedUnavailable } = resolveActionDefinition(ab, p);
+      if (curatedUnavailable) break;
       ab.attemptedGenerate = true;
       const missing = missingRequiredActionFields(template, ab.values);
       if (missing.length > 0) {
@@ -981,7 +1064,7 @@ async function handleClick(e: Event): Promise<void> {
       downloadText(`${base}-draft-schema.json`, exportDraftActionSchemaJson(schema), 'application/json');
       break;
     }
-    case 'import-curated-schema':
+    case 'attach-curated-schema':
       if (id) (document.getElementById(`curated-schema-input-${id}`) as HTMLInputElement | null)?.click();
       break;
     case 'add-checklist': {
@@ -1106,25 +1189,49 @@ async function handleChange(e: Event): Promise<void> {
   applyBinding(bind, id, value, checked);
 }
 
+function resetGeneratedOutput(ab: ActionBuilderState): void {
+  ab.output = null;
+  ab.savedBlockId = null;
+  ab.attemptedGenerate = false;
+}
+
 function applyActionBinding(bind: string, id: string | undefined, value: string, checked: boolean | undefined): void {
   const ab = state.actionBuilder;
+  const project = state.project;
   switch (bind) {
     case 'action.revisionLabel':
       ab.revisionLabel = value;
       break;
+    case 'action.source': {
+      ab.source = value === 'curated' ? 'curated' : 'builtin';
+      if (project) {
+        const resolved = resolveActionDefinition(ab, project);
+        if (resolved.curated) ab.curatedSchemaId = resolved.curated.id;
+        ab.values = defaultActionValues(resolved.template);
+      }
+      resetGeneratedOutput(ab);
+      break;
+    }
     case 'action.templateId': {
       const template = getActionTemplate(value) ?? ACTION_TEMPLATES[0];
       ab.templateId = template.id;
       ab.values = defaultActionValues(template);
-      ab.output = null;
-      ab.savedBlockId = null;
-      ab.attemptedGenerate = false;
+      resetGeneratedOutput(ab);
+      break;
+    }
+    case 'action.curatedSchemaId': {
+      ab.curatedSchemaId = value;
+      if (project) {
+        const resolved = resolveActionDefinition(ab, project);
+        ab.values = defaultActionValues(resolved.template);
+      }
+      resetGeneratedOutput(ab);
       break;
     }
     case 'action.field': {
-      if (!id) break;
-      const template = getActionTemplate(ab.templateId);
-      const field = template?.fields.find((f) => f.key === id);
+      if (!id || !project) break;
+      const { template } = resolveActionDefinition(ab, project);
+      const field = template.fields.find((f) => f.key === id);
       if (!field) break;
       ab.values[id] = coerceActionFieldValue(field, value, checked);
       break;
@@ -1259,14 +1366,19 @@ async function handleCuratedSchemaFile(input: HTMLInputElement): Promise<void> {
   input.value = '';
   const p = state.project;
   if (!file || !p || !scriptId) return;
+  const script = p.scripts.find((s) => s.id === scriptId);
+  if (!script) return;
   try {
     const text = await readFileText(file);
     const schema = importCuratedActionSchemaJson(text);
-    const script = p.scripts.find((s) => s.id === scriptId);
-    if (script) {
-      script.curatedSchema = schema;
-      commit();
-    }
+    // Attaching from a specific script always scopes the schema to it,
+    // regardless of what scriptId/scriptFilename the JSON itself carried.
+    schema.scriptId = script.id;
+    schema.scriptFilename = script.filename;
+    const idx = p.curatedSchemas.findIndex((s) => s.id === schema.id);
+    if (idx >= 0) p.curatedSchemas[idx] = schema;
+    else p.curatedSchemas.push(schema);
+    commit();
   } catch (err) {
     window.alert(`Curated schema import failed: ${(err as Error).message}`);
   }

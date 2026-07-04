@@ -3,3 +3,7 @@ dist/
 *.log
 .DS_Store
 .vite/
+
+# Personal local script imports for the Script Library — never commit
+# third-party script files.
+local-scripts/

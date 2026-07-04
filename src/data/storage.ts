@@ -17,7 +17,9 @@ import type {
   ScriptSection,
   VariableCandidate,
   DraftActionSchema,
-  DraftActionField,
+  CuratedActionSchema,
+  CuratedSchemaField,
+  ActionFieldOption,
 } from '../core/types.js';
 import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/sources.js';
 
@@ -128,6 +130,8 @@ const RULES = [
 const SECTION_KINDS = ['header', 'body'] as const;
 const INFERRED_FIELD_KINDS = ['number', 'checkbox', 'select', 'text', 'unknown'] as const;
 const CANDIDATE_CONFIDENCES = ['high', 'medium', 'low'] as const;
+const ACTION_FIELD_TYPES = ['text', 'number', 'select', 'checkbox'] as const;
+const CURATED_SCHEMA_STATUSES = ['draft', 'reviewed', 'disabled'] as const;
 
 function fail(msg: string): never {
   throw new Error(`Invalid project: ${msg}`);
@@ -375,32 +379,6 @@ function parseScriptScanResult(v: unknown, path: string): ScriptScanResult {
   };
 }
 
-function parseDraftActionField(v: unknown, path: string): DraftActionField {
-  const o = asObject(v, path);
-  const field: DraftActionField = {
-    key: asString(o.key, `${path}.key`),
-    label: asString(o.label, `${path}.label`),
-    inferredType: asEnum(o.inferredType, INFERRED_FIELD_KINDS, `${path}.inferredType`),
-    confidence: asEnum(o.confidence, CANDIDATE_CONFIDENCES, `${path}.confidence`),
-    sourceLine: asNumber(o.sourceLine, `${path}.sourceLine`),
-  };
-  const notes = asOptString(o.notes, `${path}.notes`);
-  if (notes !== undefined) field.notes = notes;
-  return field;
-}
-
-function parseDraftActionSchema(v: unknown, path: string): DraftActionSchema {
-  const o = asObject(v, path);
-  if (o.isDraft !== true) fail(`${path}.isDraft must be true.`);
-  return {
-    scriptId: asString(o.scriptId, `${path}.scriptId`),
-    scriptFilename: asString(o.scriptFilename, `${path}.scriptFilename`),
-    generatedAt: asString(o.generatedAt, `${path}.generatedAt`),
-    fields: asArray(o.fields, `${path}.fields`).map((f, i) => parseDraftActionField(f, `${path}.fields[${i}]`)),
-    isDraft: true,
-  };
-}
-
 function parseScriptFile(v: unknown, i: number): ScriptFile {
   const path = `scripts[${i}]`;
   const o = asObject(v, path);
@@ -415,30 +393,85 @@ function parseScriptFile(v: unknown, i: number): ScriptFile {
   if (o.lastScan !== undefined && o.lastScan !== null) {
     script.lastScan = parseScriptScanResult(o.lastScan, `${path}.lastScan`);
   }
-  if (o.curatedSchema !== undefined && o.curatedSchema !== null) {
-    script.curatedSchema = parseDraftActionSchema(o.curatedSchema, `${path}.curatedSchema`);
-  }
   return script;
 }
 
-/** Serialize a draft/curated action schema for local export only (no network). */
+/** Serialize an auto-generated draft schema for local export only (no network). */
 export function exportDraftActionSchemaJson(schema: DraftActionSchema): string {
+  return JSON.stringify(schema, null, 2);
+}
+
+// --- Curated action schemas (mock mode only) --------------------------------
+
+function parseFieldOption(v: unknown, path: string): ActionFieldOption {
+  const o = asObject(v, path);
+  return { value: asString(o.value, `${path}.value`), label: asString(o.label, `${path}.label`) };
+}
+
+function asActionFieldValue(v: unknown, path: string): string | number | boolean {
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v;
+  fail(`${path} must be a string, number, or boolean.`);
+}
+
+function asStringArray(v: unknown, path: string): string[] {
+  return asArray(v, path).map((s, i) => asString(s, `${path}[${i}]`));
+}
+
+function parseCuratedSchemaField(v: unknown, path: string): CuratedSchemaField {
+  const o = asObject(v, path);
+  const field: CuratedSchemaField = {
+    key: asString(o.key, `${path}.key`),
+    label: asString(o.label, `${path}.label`),
+    type: asEnum(o.type, ACTION_FIELD_TYPES, `${path}.type`),
+    required: asBoolean(o.required, `${path}.required`),
+    variableName: asString(o.variableName, `${path}.variableName`),
+  };
+  const helpText = asOptString(o.helpText, `${path}.helpText`);
+  if (helpText !== undefined) field.helpText = helpText;
+  if (o.warnings !== undefined) field.warnings = asStringArray(o.warnings, `${path}.warnings`);
+  if (o.options !== undefined) {
+    field.options = asArray(o.options, `${path}.options`).map((opt, i) => parseFieldOption(opt, `${path}.options[${i}]`));
+  }
+  if (o.defaultValue !== undefined) field.defaultValue = asActionFieldValue(o.defaultValue, `${path}.defaultValue`);
+  return field;
+}
+
+function parseCuratedActionSchema(v: unknown, path: string): CuratedActionSchema {
+  const o = asObject(v, path);
+  const schema: CuratedActionSchema = {
+    id: asString(o.id, `${path}.id`),
+    label: asString(o.label, `${path}.label`),
+    description: asString(o.description, `${path}.description`),
+    supportedRevisionLabels: asStringArray(o.supportedRevisionLabels, `${path}.supportedRevisionLabels`),
+    fields: asArray(o.fields, `${path}.fields`).map((f, i) => parseCuratedSchemaField(f, `${path}.fields[${i}]`)),
+    status: asEnum(o.status, CURATED_SCHEMA_STATUSES, `${path}.status`),
+  };
+  const scriptId = asOptString(o.scriptId, `${path}.scriptId`);
+  if (scriptId !== undefined) schema.scriptId = scriptId;
+  const scriptFilename = asOptString(o.scriptFilename, `${path}.scriptFilename`);
+  if (scriptFilename !== undefined) schema.scriptFilename = scriptFilename;
+  return schema;
+}
+
+/** Serialize a curated action schema for local export only (no network). */
+export function exportCuratedActionSchemaJson(schema: CuratedActionSchema): string {
   return JSON.stringify(schema, null, 2);
 }
 
 /**
  * Parse and deep-validate a hand-curated action schema JSON file. This is
- * informational only — it is never wired into ACTION_TEMPLATES or any
- * generator; it is only stored back onto a ScriptFile for review.
+ * mock-mode-only: it is never wired into a real generator. The Action
+ * Builder may render/validate a curated schema's fields, but
+ * MockGeneratorAdapter never reads variableName, helpText, or warnings.
  */
-export function importCuratedActionSchemaJson(text: string): DraftActionSchema {
+export function importCuratedActionSchemaJson(text: string): CuratedActionSchema {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     throw new Error('File is not valid JSON.');
   }
-  return parseDraftActionSchema(parsed, 'root');
+  return parseCuratedActionSchema(parsed, 'root');
 }
 
 function parseProject(v: unknown): Project {
@@ -456,5 +489,9 @@ function parseProject(v: unknown): Project {
     projectStatus: asEnum(o.projectStatus, STATUSES, 'projectStatus'),
     // Backwards-compatible: older exports predate the Script Library and have no `scripts` field.
     scripts: o.scripts !== undefined ? asArray(o.scripts, 'scripts').map((s, i) => parseScriptFile(s, i)) : [],
+    // Backwards-compatible: older exports predate curated schemas.
+    curatedSchemas: o.curatedSchemas !== undefined
+      ? asArray(o.curatedSchemas, 'curatedSchemas').map((s, i) => parseCuratedActionSchema(s, `curatedSchemas[${i}]`))
+      : [],
   };
 }

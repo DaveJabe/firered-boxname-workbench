@@ -113,6 +113,7 @@ main:focus { outline: none; }
 .pill.status-in-review { background: var(--warn-bg); border-color: #e6cf7a; color: #8a6d00; }
 .pill.status-reviewed { background: #e7f5ec; border-color: #9fd3b4; color: var(--ok); }
 .pill.status-exported { background: #eef1f5; border-color: #c9ccd1; color: var(--muted); }
+.pill.status-disabled { background: var(--err-bg); border-color: #e6b3ba; color: var(--accent); }
 
 /* --- summary card + filter chips ------------------------------------------ */
 .card.summary { display: flex; gap: 1.5rem; flex-wrap: wrap; }

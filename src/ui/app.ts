@@ -14,6 +14,8 @@ import type {
   DraftActionSchema,
   CuratedActionSchema,
   CuratedSchemaField,
+  FilledScriptResult,
+  PastedOutputRow,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -26,9 +28,10 @@ import { TEMPLATES } from '../templates/checklist-templates.js';
 import { ACTION_TEMPLATES, getActionTemplate, type ActionField, type ActionTemplate } from '../templates/action-templates.js';
 import { defaultActionValues, coerceActionFieldValue, missingRequiredActionFields } from '../core/actionInput.js';
 import { MockGeneratorAdapter } from '../core/generatorAdapter.js';
-import { formatBoxNameSheetText } from '../core/boxNameSheet.js';
+import { formatBoxNameSheetText, splitPastedOutputForDisplay } from '../core/boxNameSheet.js';
 import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
 import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision } from '../core/curatedSchemas.js';
+import { fillScriptFromSchema } from '../core/scriptFiller.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -50,6 +53,14 @@ const SCREEN_LABEL: Record<Screen, string> = {
   checklist: 'Checklist', notes: 'Notes', imports: 'Imported text', validation: 'Validation', report: 'Report',
 };
 
+interface PasteBackState {
+  rawText: string;
+  startingBoxNumber: string;
+  label: string;
+  preview: PastedOutputRow[] | null;
+  savedBlockId: string | null;
+}
+
 interface ActionBuilderState {
   revisionLabel: string;
   /** Whether fields come from the built-in mock catalog or a curated schema — mock mode either way. */
@@ -60,6 +71,15 @@ interface ActionBuilderState {
   output: MockGeneratedOutput | null;
   savedBlockId: string | null;
   attemptedGenerate: boolean;
+  /** Result of the last "Preview filled script" click, if any. Never invokes a generator. */
+  filledScript: FilledScriptResult | null;
+  filledScriptSavedBlockId: string | null;
+  /** Manual paste-back of output from the user's own external generator. */
+  pasteBack: PasteBackState;
+}
+
+function makePasteBackState(): PasteBackState {
+  return { rawText: '', startingBoxNumber: '', label: '', preview: null, savedBlockId: null };
 }
 
 function makeActionBuilderState(revisionLabel: string): ActionBuilderState {
@@ -73,6 +93,9 @@ function makeActionBuilderState(revisionLabel: string): ActionBuilderState {
     output: null,
     savedBlockId: null,
     attemptedGenerate: false,
+    filledScript: null,
+    filledScriptSavedBlockId: null,
+    pasteBack: makePasteBackState(),
   };
 }
 
@@ -368,6 +391,72 @@ function boxNameSheet(p: Project, output: MockGeneratedOutput, savedBlockId: str
   </div>`;
 }
 
+function filledScriptSection(result: FilledScriptResult): string {
+  if (result.errors.length > 0) {
+    return `<div class="badge error" style="display:block;margin-top:0.5rem">${result.errors.map((e) => escapeHtml(e)).join('<br>')}</div>`;
+  }
+  const changeRows = result.changedLines
+    .map(
+      (c) => `<tr><td>${c.line}</td><td><code>${escapeHtml(c.variableName)}</code></td><td><code>${escapeHtml(c.before)}</code></td><td><code>${escapeHtml(c.after)}</code></td></tr>`,
+    )
+    .join('');
+  const warningsHtml = result.warnings.length
+    ? `<div class="badge warning" style="display:block;margin:0.5rem 0">${result.warnings.map((w) => escapeHtml(w)).join('<br>')}</div>`
+    : '';
+  return `<p class="muted">${result.changedLines.length} line(s) would change.</p>
+    ${warningsHtml}
+    ${result.changedLines.length
+      ? `<table><thead><tr><th>Line</th><th>Variable</th><th>Before</th><th>After</th></tr></thead><tbody>${changeRows}</tbody></table>`
+      : ''}
+    <label>Filled script (read-only preview)</label>
+    ${lineNumberView(result.filledScriptText)}
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn" data-action="copy-filled-script">Copy filled script</button>
+      <button class="btn" data-action="save-filled-script">Save filled script as block</button>
+    </div>`;
+}
+
+function pastedOutputSheet(rows: readonly PastedOutputRow[]): string {
+  const body = rows
+    .map(
+      (r, i) => `<tr>
+        <td>${r.rowNumber}</td>
+        <td>${r.boxLabel ? escapeHtml(r.boxLabel) : '—'}</td>
+        <td><code>${escapeHtml(r.text)}</code></td>
+        <td><button class="btn small" data-action="copy-pasted-row" data-row="${i}">Copy row</button></td>
+      </tr>`,
+    )
+    .join('');
+  return `<div class="card" style="margin-top:0.5rem">
+    <table><thead><tr><th>Row</th><th>Box label</th><th>Text</th><th></th></tr></thead><tbody>${body}</tbody></table>
+  </div>`;
+}
+
+function pasteBackCard(p: Project, ab: ActionBuilderState, actionLabel: string): string {
+  const pb = ab.pasteBack;
+  const preview = pb.preview ? pastedOutputSheet(pb.preview) : '';
+  const saved = pb.savedBlockId && p.importedBlocks.some((b) => b.id === pb.savedBlockId)
+    ? `<p class="muted">Saved &#10003; <button class="btn small" data-action="jump" data-kind="importedBlock" data-ref="${attr(pb.savedBlockId)}">View in Imported text</button></p>`
+    : '';
+  return `<div class="card">
+    <h3>Paste generator output</h3>
+    <p class="muted">This app does not run the generator. Paste output from your own local generator here — it is stored and shown exactly as pasted, never normalized, decoded, or transformed.</p>
+    <label for="pb-raw">Raw output</label>
+    <textarea id="pb-raw" data-bind="pasteback.rawText" placeholder="Paste your generator's output here">${escapeHtml(pb.rawText)}</textarea>
+    <div class="grid2">
+      <div><label for="pb-start">Starting box number (optional)</label><input type="number" id="pb-start" data-bind="pasteback.startingBoxNumber" value="${attr(pb.startingBoxNumber)}" /></div>
+      <div><label for="pb-label">Output label / notes</label><input type="text" id="pb-label" data-bind="pasteback.label" value="${attr(pb.label)}" placeholder="e.g. ${attr(actionLabel)} — batch 1" /></div>
+    </div>
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn" data-action="preview-pasted-output">Preview box-name sheet</button>
+      <button class="btn" data-action="copy-pasted-output">Copy all raw output</button>
+      <button class="btn primary" data-action="save-pasted-output">Save output to project</button>
+    </div>
+    ${preview}
+    ${saved}
+  </div>`;
+}
+
 function curatedFieldExtra(field: CuratedSchemaField | undefined): string {
   if (!field) return '';
   const warnings = (field.warnings ?? [])
@@ -409,6 +498,17 @@ function renderActions(): string {
     ? `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span>${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`
     : '';
 
+  const linkedScript = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+  const filledScriptCard = linkedScript
+    ? `<div class="card">
+        <h3>Preview filled script <span class="pill">manual — no generator invoked</span></h3>
+        <p class="muted">This app does not run the generator. Copy this filled script and paste it into your own local generator.</p>
+        <p class="muted">From: ${escapeHtml(linkedScript.filename)}</p>
+        <button class="btn" data-action="preview-filled-script">Preview filled script</button>
+        ${ab.filledScript ? filledScriptSection(ab.filledScript) : ''}
+      </div>`
+    : '';
+
   return `<h1>Action Builder <span class="pill">mock / non-operational</span></h1>
     <p class="muted">Choose a known action template or a curated schema, fill in its fields, and generate a mock box-name sheet. Output here is always a fixed placeholder — no real generator is connected in this phase.</p>
     <div class="card">
@@ -433,7 +533,9 @@ function renderActions(): string {
         <button class="btn primary" data-action="generate-mock-sheet"${curatedUnavailable ? ' disabled' : ''}>Generate mock sheet</button>
       </div>
     </div>
-    ${sheetHtml}`;
+    ${sheetHtml}
+    ${filledScriptCard}
+    ${pasteBackCard(p, ab, template.label)}`;
 }
 
 // --- Script Library (developer-only, informational) -------------------------
@@ -1038,6 +1140,115 @@ async function handleClick(e: Event): Promise<void> {
       commit();
       break;
     }
+    case 'preview-filled-script': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const { curated } = resolveActionDefinition(ab, p);
+      const script = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+      if (!curated || !script) break;
+      ab.filledScript = fillScriptFromSchema(script.rawText, curated, ab.values);
+      ab.filledScriptSavedBlockId = null;
+      render();
+      break;
+    }
+    case 'copy-filled-script': {
+      const ab = state.actionBuilder;
+      if (!ab.filledScript || ab.filledScript.errors.length > 0) break;
+      const ok = await copyText(ab.filledScript.filledScriptText);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'save-filled-script': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const { template, curated } = resolveActionDefinition(ab, p);
+      if (!ab.filledScript || ab.filledScript.errors.length > 0 || !curated?.scriptId) break;
+      const script = p.scripts.find((s) => s.id === curated.scriptId);
+      const now = nowIso();
+      const block: ImportedTextBlock = {
+        id: uid(),
+        title: `${template.label} — filled script`,
+        categoryLabel: 'Filled script',
+        revisionLabel: ab.revisionLabel,
+        rawText: ab.filledScript.filledScriptText,
+        notes: '',
+        source: {
+          type: 'filled-script',
+          label: 'Filled script (this app)',
+          importedAt: now,
+          schemaVersion: SOURCE_SCHEMA_VERSION,
+          actionId: template.id,
+          actionLabel: template.label,
+          generatedBy: 'manual script filler',
+          scriptId: curated.scriptId,
+          filename: script?.filename,
+        },
+      };
+      p.importedBlocks.push(block);
+      ab.filledScriptSavedBlockId = block.id;
+      commit();
+      break;
+    }
+    case 'preview-pasted-output': {
+      const ab = state.actionBuilder;
+      const startNum = parseOptInt(ab.pasteBack.startingBoxNumber) ?? null;
+      ab.pasteBack.preview = splitPastedOutputForDisplay(ab.pasteBack.rawText, startNum);
+      render();
+      break;
+    }
+    case 'copy-pasted-row': {
+      const ab = state.actionBuilder;
+      const idx = Number(el.dataset.row);
+      const row = ab.pasteBack.preview?.[idx];
+      if (!row) break;
+      const ok = await copyText(row.text);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'copy-pasted-output': {
+      const ab = state.actionBuilder;
+      const ok = await copyText(ab.pasteBack.rawText);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'save-pasted-output': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const pb = ab.pasteBack;
+      if (!pb.rawText) break;
+      const { template, curated } = resolveActionDefinition(ab, p);
+      const linkedScript = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+      const now = nowIso();
+      const block: ImportedTextBlock = {
+        id: uid(),
+        title: pb.label.trim() || `${template.label} — manual generator output`,
+        categoryLabel: 'Manual generator output',
+        revisionLabel: ab.revisionLabel,
+        rawText: pb.rawText,
+        notes: '',
+        source: {
+          type: 'external-local-tool',
+          label: 'Manual external generator output',
+          importedAt: now,
+          schemaVersion: SOURCE_SCHEMA_VERSION,
+          actionId: template.id,
+          actionLabel: template.label,
+          generatedBy: 'manual external generator',
+          scriptId: linkedScript?.id,
+          filename: linkedScript?.filename,
+        },
+      };
+      p.importedBlocks.push(block);
+      pb.savedBlockId = block.id;
+      commit();
+      break;
+    }
     case 'import-script':
       (document.getElementById('script-file-input') as HTMLInputElement | null)?.click();
       break;
@@ -1186,6 +1397,11 @@ async function handleChange(e: Event): Promise<void> {
     render();
     return;
   }
+  if (bind.startsWith('pasteback.')) {
+    applyPasteBackBinding(bind, value);
+    render();
+    return;
+  }
   applyBinding(bind, id, value, checked);
 }
 
@@ -1193,6 +1409,8 @@ function resetGeneratedOutput(ab: ActionBuilderState): void {
   ab.output = null;
   ab.savedBlockId = null;
   ab.attemptedGenerate = false;
+  ab.filledScript = null;
+  ab.filledScriptSavedBlockId = null;
 }
 
 function applyActionBinding(bind: string, id: string | undefined, value: string, checked: boolean | undefined): void {
@@ -1236,6 +1454,24 @@ function applyActionBinding(bind: string, id: string | undefined, value: string,
       ab.values[id] = coerceActionFieldValue(field, value, checked);
       break;
     }
+  }
+}
+
+function applyPasteBackBinding(bind: string, value: string): void {
+  const pb = state.actionBuilder.pasteBack;
+  switch (bind) {
+    case 'pasteback.rawText':
+      pb.rawText = value;
+      pb.preview = null;
+      pb.savedBlockId = null;
+      break;
+    case 'pasteback.startingBoxNumber':
+      pb.startingBoxNumber = value;
+      pb.preview = null;
+      break;
+    case 'pasteback.label':
+      pb.label = value;
+      break;
   }
 }
 

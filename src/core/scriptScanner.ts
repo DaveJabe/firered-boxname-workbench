@@ -25,8 +25,10 @@ const ASSIGNMENT = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]*?)\s*(?:;\s*(.*))?$
 const COMMENT_LINE = /^\s*(?:;|#|\/\/)\s*(.*)$/;
 const ANNOTATION = /@input:([a-zA-Z0-9_]+)/;
 
-/** 0-based index of the first line containing the `@@` marker, or null. */
-function findMarkerLineIndex(lines: string[]): number | null {
+/** 0-based index of the first line containing the `@@` marker, or null.
+ *  Exported so other modules (e.g. the script filler) agree on exactly
+ *  where the header/body boundary is. */
+export function findMarkerLineIndex(lines: string[]): number | null {
   const idx = lines.findIndex((l) => l.includes(MARKER));
   return idx === -1 ? null : idx;
 }

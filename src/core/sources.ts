@@ -12,19 +12,24 @@ export const SOURCE_TYPES: readonly TextSourceType[] = [
   'demo-fixture',
   'external-local-tool',
   'mock-output',
+  'filled-script',
 ];
 
 /**
  * Source types an active code path AUTO-assigns when text is added.
- * `external-local-tool` is excluded here because the app never auto-assigns it —
- * a user may only choose it manually as a provenance label. `mock-output` IS
- * auto-assigned, by the Action Builder's "Save to project" action.
+ * `mock-output` is auto-assigned by the Action Builder's "Save to project"
+ * action. `filled-script` is auto-assigned by "Save filled script as block".
+ * `external-local-tool` is now auto-assigned too, by "Save output to
+ * project" in the manual paste-back flow — it remains ALSO user-selectable
+ * as a manual provenance label for existing imported blocks.
  */
 export const ACTIVE_SOURCE_TYPES: readonly TextSourceType[] = [
   'manual-paste',
   'file-import',
   'demo-fixture',
   'mock-output',
+  'filled-script',
+  'external-local-tool',
 ];
 
 /** Source types a user may pick in the block source-type selector. */
@@ -34,6 +39,7 @@ export const SELECTABLE_SOURCE_TYPES: readonly TextSourceType[] = [
   'demo-fixture',
   'external-local-tool',
   'mock-output',
+  'filled-script',
 ];
 
 export const SOURCE_TYPE_LABELS: Record<TextSourceType, string> = {
@@ -42,6 +48,7 @@ export const SOURCE_TYPE_LABELS: Record<TextSourceType, string> = {
   'demo-fixture': 'Demo fixture',
   'external-local-tool': 'External local tool',
   'mock-output': 'Mock generator output',
+  'filled-script': 'Filled script (this app)',
 };
 
 /** Reasonable max lengths for user-typed provenance fields (validation only). */
@@ -55,6 +62,7 @@ export const SOURCE_FIELD_MAX = {
   actionId: 200,
   actionLabel: 200,
   generatedBy: 200,
+  scriptId: 200,
 } as const;
 
 export function isActiveSourceType(t: TextSourceType): boolean {

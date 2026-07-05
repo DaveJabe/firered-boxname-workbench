@@ -14,15 +14,17 @@
 // range, values 1-354: this single table is shared, unchanged, across
 // Ruby, Sapphire, FireRed, LeafGreen, and Emerald, so it is directly and
 // fully usable for FireRed/LeafGreen specifically. Move `category` values
-// reflect each move's current/modern elemental type (matching Bulbapedia's
-// present-day table), which is occasionally different from how a move was
-// typed back in Generation III itself (e.g. Fairy-type moves that were
-// Normal-type before Generation VI introduced the Fairy type) — this
-// matches the convention already used by this catalog's original 100
-// entries. Treat this as a curated reference, not gospel: double-check
-// anything you rely on against your own reference before trusting it —
-// this app's scripts and generator remain the source of truth, not this
-// catalog.
+// reflect each move's Generation III elemental type/mechanics — the type
+// the game itself actually uses — NOT a later generation's retyping. The
+// Fairy type did not exist until Generation VI, so the handful of moves
+// later retyped Fairy (Charm, Moonlight, Sweet Kiss) are correctly listed
+// here as Normal, matching how FireRed/LeafGreen itself resolves their
+// type. Modern/Fairy is still findable by name via each such entry's
+// `aliases: ['fairy']`, so searching "fairy" surfaces them without
+// misrepresenting their actual in-game category. Treat this as a curated
+// reference, not gospel: double-check anything you rely on against your
+// own reference before trusting it — this app's scripts and generator
+// remain the source of truth, not this catalog.
 
 import type { ReferenceCatalog } from '../core/referenceData.js';
 
@@ -40,10 +42,12 @@ export const GEN3_MOVES_CATALOG: ReferenceCatalog = {
     'originals (Fake Out through Psycho Boost) — this single table is shared, ' +
     'unchanged, across Ruby, Sapphire, FireRed, LeafGreen, and Emerald, so it ' +
     'is safe to treat as complete for FireRed/LeafGreen specifically. Move ' +
-    '`category` values are each move\'s current/modern type per Bulbapedia, ' +
-    'which for a handful of moves (e.g. Charm, Moonlight, Sweet Kiss — Fairy-' +
-    'type only since Generation VI) differs from how that move was typed ' +
-    'in-game during Generation III itself.',
+    '`category` values are each move\'s Generation III type/mechanics — the ' +
+    'type FireRed/LeafGreen itself actually resolves — not a later ' +
+    'generation\'s retyping. Charm, Moonlight, and Sweet Kiss are Normal-type ' +
+    'in Generation III (the Fairy type did not exist until Generation VI); ' +
+    'each carries an `aliases: [\'fairy\']` entry so searching "fairy" still ' +
+    'finds them without misrepresenting their actual in-game category.',
   entries: [
     { value: 1, name: 'Pound', category: 'Normal' },
     { value: 2, name: 'Karate Chop', category: 'Fighting' },
@@ -230,7 +234,7 @@ export const GEN3_MOVES_CATALOG: ReferenceCatalog = {
     { value: 183, name: 'Mach Punch', category: 'Fighting' },
     { value: 184, name: 'Scary Face', category: 'Normal' },
     { value: 185, name: 'Feint Attack', category: 'Dark' },
-    { value: 186, name: 'Sweet Kiss', category: 'Fairy' },
+    { value: 186, name: 'Sweet Kiss', category: 'Normal', aliases: ['fairy'] },
     { value: 187, name: 'Belly Drum', category: 'Normal' },
     { value: 188, name: 'Sludge Bomb', category: 'Poison' },
     { value: 189, name: 'Mud-Slap', category: 'Ground' },
@@ -248,7 +252,7 @@ export const GEN3_MOVES_CATALOG: ReferenceCatalog = {
     { value: 201, name: 'Sandstorm', category: 'Rock' },
     { value: 202, name: 'Giga Drain', category: 'Grass' },
     { value: 203, name: 'Endure', category: 'Normal' },
-    { value: 204, name: 'Charm', category: 'Fairy' },
+    { value: 204, name: 'Charm', category: 'Normal', aliases: ['fairy'] },
     { value: 205, name: 'Rollout', category: 'Rock' },
     { value: 206, name: 'False Swipe', category: 'Normal' },
     { value: 207, name: 'Swagger', category: 'Normal' },
@@ -280,7 +284,7 @@ export const GEN3_MOVES_CATALOG: ReferenceCatalog = {
     { value: 233, name: 'Vital Throw', category: 'Fighting' },
     { value: 234, name: 'Morning Sun', category: 'Normal' },
     { value: 235, name: 'Synthesis', category: 'Grass' },
-    { value: 236, name: 'Moonlight', category: 'Fairy' },
+    { value: 236, name: 'Moonlight', category: 'Normal', aliases: ['fairy'] },
     { value: 237, name: 'Hidden Power', category: 'Normal' },
     { value: 238, name: 'Cross Chop', category: 'Fighting' },
     { value: 239, name: 'Twister', category: 'Dragon' },

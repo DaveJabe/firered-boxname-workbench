@@ -131,6 +131,21 @@ describe('gen3-moves catalog (real, checked-in, complete)', () => {
     expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 354)?.name).toBe('Psycho Boost');
   });
 
+  it('resolves Charm, Moonlight, and Sweet Kiss to their Generation III type/category (Normal), not modern Fairy typing', () => {
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 204)?.category).toBe('Normal');
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 236)?.category).toBe('Normal');
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 186)?.category).toBe('Normal');
+  });
+
+  it('still finds Charm, Moonlight, and Sweet Kiss when searching "fairy", but only via aliases, never via category', () => {
+    const results = searchReferenceEntries(GEN3_MOVES_CATALOG, 'fairy');
+    expect(results.map((e) => e.name).sort()).toEqual(['Charm', 'Moonlight', 'Sweet Kiss']);
+    for (const entry of results) {
+      expect(entry.category).toBe('Normal');
+      expect(entry.aliases).toContain('fairy');
+    }
+  });
+
   it('searches by name', () => {
     const results = searchReferenceEntries(GEN3_MOVES_CATALOG, 'thunder');
     expect(results.map((e) => e.name)).toEqual(expect.arrayContaining(['Thunder Punch', 'Thunderbolt', 'Thunder Wave', 'Thunder Shock', 'Thunder']));

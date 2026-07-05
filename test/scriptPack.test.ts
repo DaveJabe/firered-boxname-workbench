@@ -10,6 +10,8 @@ import {
   filterScriptRows,
   searchScriptRows,
   effectiveScriptTarget,
+  findEsharkGithubPacks,
+  removeScriptPacks,
   type CollectedFile,
 } from '../src/core/scriptPack.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
@@ -269,5 +271,84 @@ describe('effectiveScriptTarget — pack default target inheritance and script o
     effectiveScriptTarget(script, pack);
     expect(JSON.stringify(script)).toBe(scriptBefore);
     expect(JSON.stringify(pack)).toBe(packBefore);
+  });
+});
+
+function makeGithubPack(over: Partial<ScriptPack> = {}): ScriptPack {
+  return {
+    id: 'gh-pack', name: 'E-Sh4rk scripts (GitHub @ main)', importedAt: ISO, defaultTarget: UNKNOWN_TARGET, scriptIds: [],
+    sourceProfile: 'eshark-github', ...over,
+  };
+}
+
+describe('findEsharkGithubPacks', () => {
+  it('returns only packs fetched from the E-Sh4rk GitHub source', () => {
+    const github = makeGithubPack();
+    const local = { id: 'local-pack', name: 'Local folder', importedAt: ISO, defaultTarget: UNKNOWN_TARGET, scriptIds: [] };
+    expect(findEsharkGithubPacks([github, local])).toEqual([github]);
+  });
+
+  it('returns an empty array when no E-Sh4rk GitHub pack exists', () => {
+    const local = { id: 'local-pack', name: 'Local folder', importedAt: ISO, defaultTarget: UNKNOWN_TARGET, scriptIds: [] };
+    expect(findEsharkGithubPacks([local])).toEqual([]);
+  });
+
+  it('sorts multiple matches most-recently-fetched first', () => {
+    const older = makeGithubPack({ id: 'older', fetchedAt: '2026-01-01T00:00:00.000Z' });
+    const newer = makeGithubPack({ id: 'newer', fetchedAt: '2026-06-01T00:00:00.000Z' });
+    expect(findEsharkGithubPacks([older, newer]).map((p) => p.id)).toEqual(['newer', 'older']);
+  });
+});
+
+describe('removeScriptPacks', () => {
+  it('removes the given packs and their scripts, leaving unrelated scripts/packs untouched', () => {
+    const pack = makeGithubPack();
+    const otherPack = { id: 'other-pack', name: 'Other', importedAt: ISO, defaultTarget: UNKNOWN_TARGET, scriptIds: [] };
+    const inPack = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', packId: pack.id });
+    const inOtherPack = makeScript({ id: 'b', filename: 'b.txt', rawText: 'x = 1\n@@\nbody', packId: otherPack.id });
+    const unpacked = makeScript({ id: 'c', filename: 'c.txt', rawText: 'x = 1\n@@\nbody' });
+
+    const result = removeScriptPacks([inPack, inOtherPack, unpacked], [], [pack, otherPack], new Set([pack.id]));
+
+    expect(result.scripts.map((s) => s.id)).toEqual(['b', 'c']);
+    expect(result.scriptPacks.map((p) => p.id)).toEqual(['other-pack']);
+  });
+
+  it('detaches (does not delete) a curated schema attached to a removed script', () => {
+    const pack = makeGithubPack();
+    const script = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', packId: pack.id });
+    const schema = makeSchema({ id: 'schema-a', scriptId: 'a', scriptFilename: 'a.txt', status: 'reviewed' });
+
+    const result = removeScriptPacks([script], [schema], [pack], new Set([pack.id]));
+
+    expect(result.scripts).toEqual([]);
+    expect(result.curatedSchemas).toHaveLength(1);
+    expect(result.curatedSchemas[0]!.id).toBe('schema-a');
+    expect(result.curatedSchemas[0]!.scriptId).toBeUndefined();
+    expect(result.curatedSchemas[0]!.scriptFilename).toBeUndefined();
+    // Still reviewed and otherwise intact — only the script link was cleared.
+    expect(result.curatedSchemas[0]!.status).toBe('reviewed');
+  });
+
+  it('leaves a curated schema attached to a script outside the removed packs untouched', () => {
+    const pack = makeGithubPack();
+    const removedScript = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', packId: pack.id });
+    const keptSchema = makeSchema({ id: 'schema-b', scriptId: 'b' });
+
+    const result = removeScriptPacks([removedScript], [keptSchema], [pack], new Set([pack.id]));
+
+    expect(result.curatedSchemas).toEqual([keptSchema]);
+  });
+
+  it('is a no-op returning equivalent copies when packIds is empty', () => {
+    const pack = makeGithubPack();
+    const script = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', packId: pack.id });
+    const schema = makeSchema({ id: 'schema-a', scriptId: 'a' });
+
+    const result = removeScriptPacks([script], [schema], [pack], new Set());
+
+    expect(result.scripts).toEqual([script]);
+    expect(result.curatedSchemas).toEqual([schema]);
+    expect(result.scriptPacks).toEqual([pack]);
   });
 });

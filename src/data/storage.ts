@@ -502,7 +502,7 @@ export function exportDraftActionSchemaJson(schema: DraftActionSchema): string {
   return JSON.stringify(schema, null, 2);
 }
 
-// --- Curated action schemas (mock mode only) --------------------------------
+// --- Curated action schemas --------------------------------------------------
 
 function parseFieldOption(v: unknown, path: string): ActionFieldOption {
   const o = asObject(v, path);

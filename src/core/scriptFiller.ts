@@ -9,9 +9,11 @@
 // assignment line, and never assigns game-level meaning to any value — it
 // only swaps one text token for another, preserving everything else in the
 // line (leading whitespace, the variable name, spacing around `=`, and any
-// trailing comment) byte-for-byte. It performs no file, process, or network
-// I/O, and it does not invoke any generator: the result is text for a human
-// to copy into their own external tool by hand.
+// trailing comment) byte-for-byte. The output also reuses the original
+// script's own line-ending style (\r\n or \n) rather than always
+// normalizing to \n — see detectNewlineStyle. It performs no file, process,
+// or network I/O, and it does not invoke any generator: the result is text
+// for a human to copy into their own external tool by hand.
 
 import type { ActionFieldValue, CuratedActionSchema, FilledLineChange, FilledScriptResult } from './types.js';
 import { splitLines } from './normalize.js';
@@ -35,6 +37,17 @@ function hasUsableValue(type: string, value: ActionFieldValue | undefined): valu
   if (value === undefined) return false;
   if ((type === 'text' || type === 'select') && typeof value === 'string' && value.trim() === '') return false;
   return true;
+}
+
+/**
+ * The script's own line-ending style, so the filled output doesn't silently
+ * flip a Windows-authored (\r\n) script over to \n. A simple, single-style
+ * heuristic: whichever style appears first wins for the whole file — this
+ * doesn't reproduce a genuinely mixed-ending file line-for-line, but that's
+ * an edge case rare enough not to warrant per-line terminator tracking here.
+ */
+function detectNewlineStyle(text: string): '\r\n' | '\n' {
+  return text.includes('\r\n') ? '\r\n' : '\n';
 }
 
 /**
@@ -109,7 +122,7 @@ export function fillScriptFromSchema(
 
   return {
     originalScriptText: scriptText,
-    filledScriptText: outputLines.join('\n'),
+    filledScriptText: outputLines.join(detectNewlineStyle(scriptText)),
     changedLines,
     warnings,
     errors,

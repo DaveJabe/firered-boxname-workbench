@@ -119,10 +119,17 @@ describe('buildCuratedSchemaFromPreset', () => {
 
   it('produces a schema that appears in Run Script\'s default runnable list for that target', async () => {
     const { defaultRunnableSchemas } = await import('../src/core/curatedSchemas.js');
+    const { createProject } = await import('../src/core/factory.js');
     const preset = toyPreset({ target: FR_EN_11 });
     const schema = buildCuratedSchemaFromPreset(preset, { id: 'script-1', filename: 'ToyScript.txt' });
     const schemas: CuratedActionSchema[] = [schema];
-    expect(defaultRunnableSchemas(schemas, FR_EN_11).map((s) => s.id)).toContain(schema.id);
+    const project = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      () => 'id-0',
+      () => '2026-01-01T00:00:00.000Z',
+    );
+    project.scripts = [{ id: 'script-1', filename: 'ToyScript.txt', rawText: '', importedAt: '2026-01-01T00:00:00.000Z' }];
+    expect(defaultRunnableSchemas(schemas, project, FR_EN_11).map((s) => s.id)).toContain(schema.id);
   });
 });
 

@@ -231,3 +231,18 @@ describe('fillScriptFromSchema on a real-script-shaped fixture (Move/MoveSlot/NP
     expect(script.rawText).toBe(before);
   });
 });
+
+describe('fillScriptFromSchema — preserves the original newline style', () => {
+  it('reuses \\r\\n throughout the output when the original script used \\r\\n', () => {
+    const crlfScript = TOY_SCRIPT.replace(/\n/g, '\r\n');
+    const result = fillScriptFromSchema(crlfScript, makeSchema(), { count: 42, label: 'SAMPLE' });
+    expect(result.errors).toEqual([]);
+    expect(result.filledScriptText).not.toMatch(/[^\r]\n/); // no bare \n anywhere
+    expect(result.filledScriptText.split('\r\n').length).toBe(crlfScript.split('\r\n').length);
+  });
+
+  it('keeps plain \\n output when the original script used \\n (the existing default)', () => {
+    const result = fillScriptFromSchema(TOY_SCRIPT, makeSchema(), { count: 42, label: 'SAMPLE' });
+    expect(result.filledScriptText).not.toContain('\r\n');
+  });
+});

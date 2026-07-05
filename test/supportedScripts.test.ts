@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { CuratedActionSchema, ScriptFile } from '../src/core/types.js';
+import type { CuratedActionSchema, ScriptFile, ScriptPack } from '../src/core/types.js';
 import { scanScript } from '../src/core/scriptScanner.js';
-import { computeScriptSupportInfo, summarizeSupportedScripts } from '../src/core/supportedScripts.js';
+import { computeScriptSupportInfo, summarizeSupportedScripts, buildCompactScriptRows } from '../src/core/supportedScripts.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 
 const ISO = '2026-01-01T00:00:00.000Z';
@@ -93,5 +93,47 @@ describe('summarizeSupportedScripts', () => {
     expect(summary.needsReview.map((s) => s.id)).toEqual(['b']);
     expect(summary.noCandidates.map((s) => s.id)).toEqual(['c']);
     expect(summary.disabledOrIncompatible.map((s) => s.id)).toEqual(['d']);
+  });
+});
+
+describe('buildCompactScriptRows', () => {
+  it('builds one row per script carrying filename, title, target, candidate count, and bucket', () => {
+    const pack: ScriptPack = { id: 'pack-1', name: 'Toy pack', importedAt: ISO, defaultTarget: FR_EN_11, scriptIds: ['a'] };
+    const script = makeScript({ id: 'a', filename: 'a.txt', rawText: TOY_SCRIPT_WITH_CANDIDATES, packId: pack.id, category: 'misc' });
+    script.lastScan = scanScript(script, () => ISO);
+
+    const rows = buildCompactScriptRows([script], [], [pack]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      scriptId: 'a', filename: 'a.txt', category: 'misc', target: FR_EN_11, bucket: 'needs-review',
+    });
+    expect(rows[0]!.candidateCount).toBeGreaterThan(0);
+  });
+
+  it('carries the ready schema id and "reviewed" status only for a ready row', () => {
+    const script = makeScript({ id: 'a', rawText: TOY_SCRIPT_WITH_CANDIDATES });
+    const schema = makeSchema({ id: 'ready-schema', scriptId: 'a', status: 'reviewed', target: FR_EN_11 });
+
+    const [row] = buildCompactScriptRows([script], [schema], []);
+    expect(row!.bucket).toBe('ready');
+    expect(row!.readySchemaId).toBe('ready-schema');
+    expect(row!.schemaStatus).toBe('reviewed');
+  });
+
+  it('omits readySchemaId for a non-ready row even when a draft schema is attached', () => {
+    const script = makeScript({ id: 'a', rawText: TOY_SCRIPT_WITH_CANDIDATES });
+    const schema = makeSchema({ id: 'draft-schema', scriptId: 'a', status: 'draft' });
+
+    const [row] = buildCompactScriptRows([script], [schema], []);
+    expect(row!.bucket).toBe('needs-review');
+    expect(row!.readySchemaId).toBeUndefined();
+    expect(row!.schemaStatus).toBe('draft');
+  });
+
+  it('falls back to Unknown/Mixed target and zero candidates for a script with no pack and no scan', () => {
+    const script = makeScript({ id: 'a', rawText: TOY_SCRIPT_WITH_CANDIDATES });
+    const [row] = buildCompactScriptRows([script], [], []);
+    expect(row!.target).toEqual(UNKNOWN_TARGET);
+    expect(row!.candidateCount).toBe(0);
   });
 });

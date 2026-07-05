@@ -34,7 +34,6 @@ export const MockGeneratorAdapter: GeneratorAdapter = {
   generate(template, input, nowIso) {
     return {
       actionId: template.id,
-      actionLabel: template.label,
       revisionLabel: input.revisionLabel,
       generatedAt: nowIso(),
       rows: placeholderRows(MOCK_ROW_COUNT),

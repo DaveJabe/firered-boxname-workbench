@@ -16,7 +16,12 @@ export interface ActionField {
   type: ActionFieldType;
   required: boolean;
   placeholder?: string;
-  /** Only meaningful for type 'select'. Values are neutral placeholders. */
+  /**
+   * Only meaningful for type 'select' or 'reference-select'. For built-in
+   * templates these are neutral placeholder labels; for a curated schema's
+   * 'reference-select' field, toActionTemplateShape resolves these from a
+   * local reference catalog (see core/referenceData.ts) at render time.
+   */
   options?: readonly ActionFieldOption[];
   defaultValue?: ActionFieldValue;
   /** Only meaningful for type 'number'. Display-only range hint — never enforced or evaluated. */

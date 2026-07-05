@@ -19,6 +19,7 @@ import type {
   GameTarget,
   EsharkCategory,
   EsharkSourceProfile,
+  ReferenceCatalogId,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -38,6 +39,11 @@ import {
   upsertCuratedSchema,
   defaultRunnableSchemas,
   advancedRunnableSchemas,
+  removeCuratedSchema,
+  nextDuplicateSchemaId,
+  duplicateCuratedSchema,
+  detachCuratedSchema,
+  countSavedOutputsUsingSchema,
 } from '../core/curatedSchemas.js';
 import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../core/schemaBuilder.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
@@ -65,6 +71,8 @@ import {
   serializeReviewedPresetForExport,
 } from '../core/reviewedSchemaPresets.js';
 import { REVIEWED_SCHEMA_PRESETS } from '../templates/reviewed-schema-presets.js';
+import { referenceEntryLabel } from '../core/referenceData.js';
+import { REFERENCE_CATALOGS, REFERENCE_CATALOG_IDS, getReferenceCatalog } from '../reference/index.js';
 import {
   TARGET_GAMES,
   TARGET_LANGUAGES,
@@ -128,6 +136,8 @@ interface ActionBuilderState {
   filledScriptSavedBlockId: string | null;
   /** Manual paste-back of output from the user's own external generator. */
   pasteBack: PasteBackState;
+  /** Search/filter text per reference-select field key — narrows that field's dropdown options only. */
+  referenceSearch: Record<string, string>;
 }
 
 function makePasteBackState(): PasteBackState {
@@ -144,6 +154,7 @@ function makeEmptyActionBuilderState(): ActionBuilderState {
     filledScript: null,
     filledScriptSavedBlockId: null,
     pasteBack: makePasteBackState(),
+    referenceSearch: {},
   };
 }
 
@@ -158,6 +169,7 @@ function makeActionBuilderState(project: Project): ActionBuilderState {
     filledScript: null,
     filledScriptSavedBlockId: null,
     pasteBack: makePasteBackState(),
+    referenceSearch: {},
   };
 }
 
@@ -206,6 +218,36 @@ function openSchemaEditor(script: ScriptFile, project: Project): void {
     actionKey: '',
     target: effectiveScriptTarget(script, pack),
     supportedRevisionLabels: '',
+    included,
+    fields,
+    errors: [],
+    savedSchemaId: null,
+  };
+}
+
+/**
+ * Open the schema editor to edit an already-saved schema in place — seeded
+ * from the schema's own fields/target/status rather than fresh scan
+ * candidates. Because editor.id starts as the existing schema's id,
+ * save-schema-from-editor's upsertCuratedSchema replaces it rather than
+ * creating a new one. Requires the schema still have a linked script (the
+ * editor's candidate tables are script-scoped); does nothing otherwise.
+ */
+function openSchemaEditorForExisting(schema: CuratedActionSchema, project: Project): void {
+  const script = schema.scriptId ? project.scripts.find((s) => s.id === schema.scriptId) : undefined;
+  if (!script) return;
+  const included = new Set(schema.fields.map((f) => f.variableName));
+  const fields = new Map<string, CuratedSchemaField>();
+  for (const f of schema.fields) fields.set(f.variableName, { ...f });
+  state.schemaEditor = {
+    scriptId: script.id,
+    id: schema.id,
+    label: schema.label,
+    description: schema.description,
+    status: schema.status,
+    actionKey: schema.actionKey ?? '',
+    target: schema.target,
+    supportedRevisionLabels: schema.supportedRevisionLabels.join(', '),
     included,
     fields,
     errors: [],
@@ -276,7 +318,15 @@ function applySchemaFieldBinding(bind: string, candidateKey: string | undefined,
   switch (bind) {
     case 'schema-field.key': field.key = value; break;
     case 'schema-field.label': field.label = value; break;
-    case 'schema-field.type': field.type = value as CuratedSchemaField['type']; break;
+    case 'schema-field.type': {
+      field.type = value as CuratedSchemaField['type'];
+      // Falling back to number/text/select drops the now-meaningless catalog link.
+      if (field.type !== 'reference-select') field.referenceCatalogId = undefined;
+      break;
+    }
+    case 'schema-field.referenceCatalogId':
+      field.referenceCatalogId = (value as ReferenceCatalogId) || undefined;
+      break;
     case 'schema-field.required': field.required = checked ?? false; break;
     case 'schema-field.helpText': field.helpText = value || undefined; break;
     case 'schema-field.warningsText': {
@@ -671,7 +721,11 @@ function renderSettings(): string {
 
 // --- Run Script (curated schemas only) --------------------------------------
 
-function renderActionField(field: ActionField, values: Record<string, ActionFieldValue>): string {
+function renderActionField(
+  field: ActionField,
+  values: Record<string, ActionFieldValue>,
+  referenceSearch: Record<string, string> = {},
+): string {
   const value = values[field.key];
   if (field.type === 'checkbox') {
     const checked = Boolean(value ?? field.defaultValue ?? false);
@@ -686,11 +740,49 @@ function renderActionField(field: ActionField, values: Record<string, ActionFiel
     const opts = (field.options ?? []).map((o) => opt(o.value, o.label, current)).join('');
     return `${labelHtml}<select data-bind="action.field" data-id="${attr(field.key)}" aria-label="${attr(field.label)}">${opts}</select>`;
   }
+  if (field.type === 'reference-select') {
+    return referenceSelectFieldHtml(field, value, labelHtml, referenceSearch[field.key] ?? '');
+  }
   if (field.type === 'number') {
     const minMaxAttrs = `${field.min !== undefined ? ` min="${field.min}"` : ''}${field.max !== undefined ? ` max="${field.max}"` : ''}`;
     return `${labelHtml}<input type="number" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? 0))}"${minMaxAttrs} aria-label="${attr(field.label)}" />`;
   }
   return `${labelHtml}<input type="text" data-bind="action.field" data-id="${attr(field.key)}" value="${attr(String(value ?? ''))}" placeholder="${attr(field.placeholder ?? '')}" aria-label="${attr(field.label)}" />`;
+}
+
+/**
+ * A 'reference-select' field: a dropdown of local-catalog options (each
+ * showing "Name — value"), narrowed by an optional search box. The stored/
+ * filled value is always the numeric value only — never the display name.
+ * If the field's current value isn't in the catalog (e.g. a partial
+ * catalog doesn't cover it yet), it's still shown and kept selected rather
+ * than silently swapped for the first catalog entry.
+ */
+function referenceSelectFieldHtml(
+  field: ActionField,
+  value: ActionFieldValue | undefined,
+  labelHtml: string,
+  searchText: string,
+): string {
+  const allOptions = field.options ?? [];
+  const current = String(value ?? allOptions[0]?.value ?? '');
+  const currentOption = allOptions.find((o) => o.value === current);
+  const q = searchText.trim().toLowerCase();
+  const filtered = q ? allOptions.filter((o) => o.label.toLowerCase().includes(q)) : allOptions;
+  const visible = !q || filtered.some((o) => o.value === current) || !currentOption
+    ? filtered
+    : [currentOption, ...filtered];
+  const fallbackOption = !currentOption && current !== ''
+    ? `<option value="${attr(current)}" selected>${escapeHtml(current)} (not in local catalog)</option>`
+    : '';
+  const opts = visible.map((o) => opt(o.value, o.label, current)).join('');
+  const noMatchesNote = q && filtered.length === 0
+    ? `<p class="muted">No matches for "${escapeHtml(searchText.trim())}" — showing the current selection only.</p>`
+    : '';
+  return `${labelHtml}
+    <input type="text" data-bind="action.field-search" data-id="${attr(field.key)}" value="${attr(searchText)}" placeholder="Search…" aria-label="Search ${attr(field.label)} options" style="margin-bottom:0.25rem" />
+    <select data-bind="action.field" data-id="${attr(field.key)}" aria-label="${attr(field.label)}">${fallbackOption}${opts}</select>
+    ${noMatchesNote}`;
 }
 
 function filledScriptSection(result: FilledScriptResult): string {
@@ -851,7 +943,7 @@ function renderActions(): string {
   const isDefaultChoice = defaultSchemas.some((s) => s.id === curated.id);
   const schemaOpts = defaultSchemas.map((s) => opt(s.id, s.label, curated.id)).join('');
   const curatedByKey = new Map(curated.fields.map((f) => [f.key, f]));
-  const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
+  const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values, ab.referenceSearch) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
 
   const curatedStatusLine = `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span> · target: ${escapeHtml(targetLabel(curated.target))}${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`;
 
@@ -949,6 +1041,11 @@ function curatedSchemaFieldRow(f: CuratedSchemaField, candidatesByName: Map<stri
 function renderCuratedSchemaCard(schema: CuratedActionSchema, candidates: readonly VariableCandidate[]): string {
   const candidatesByName = new Map(candidates.map((c) => [c.name, c]));
   const rows = schema.fields.map((f) => curatedSchemaFieldRow(f, candidatesByName)).join('');
+  const idAttr = attr(schema.id);
+  const statusButtons = (['draft', 'reviewed', 'disabled'] as const)
+    .filter((s) => s !== schema.status)
+    .map((s) => `<button class="btn small" data-action="set-schema-status" data-id="${idAttr}" data-status="${s}">Mark as ${s}</button>`)
+    .join('');
   return `<div class="card ext-tool">
     <div class="row" style="justify-content:space-between">
       <div class="row">
@@ -961,8 +1058,13 @@ function renderCuratedSchemaCard(schema: CuratedActionSchema, candidates: readon
     <p class="muted">${escapeHtml(schema.description)}</p>
     ${schema.supportedRevisionLabels.length ? `<p class="muted">Supported revisions: ${schema.supportedRevisionLabels.map((r) => escapeHtml(r)).join(', ')}</p>` : ''}
     <table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Variable</th><th>Scan candidate</th><th>Help</th><th>Warnings</th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="row" style="margin-top:0.5rem">
-      <button class="btn small" data-action="export-reviewed-preset" data-id="${attr(schema.id)}">Export as reviewed preset</button>
+    <div class="row" style="margin-top:0.5rem;flex-wrap:wrap">
+      ${schema.scriptId ? `<button class="btn small" data-action="edit-curated-schema" data-id="${idAttr}">Edit schema</button>` : ''}
+      <button class="btn small" data-action="duplicate-curated-schema" data-id="${idAttr}">Duplicate schema</button>
+      ${schema.scriptId ? `<button class="btn small" data-action="detach-curated-schema" data-id="${idAttr}">Detach from this script</button>` : ''}
+      ${statusButtons}
+      <button class="btn small" data-action="export-reviewed-preset" data-id="${idAttr}">Export as reviewed preset</button>
+      <button class="btn danger small" data-action="delete-curated-schema" data-id="${idAttr}">Delete schema</button>
     </div>
   </div>`;
 }
@@ -981,13 +1083,33 @@ function schemaCandidateRow(c: VariableCandidate, editor: SchemaEditorState): st
   </tr>`;
 }
 
+/** A few catalog entries plus its label/size/partial status — shown in the schema editor so the reviewer can sanity-check the catalog before relying on it. */
+function referenceCatalogPreviewHtml(catalogId: ReferenceCatalogId | undefined): string {
+  if (!catalogId) return '<p class="muted">Choose a catalog above to preview a few entries.</p>';
+  const catalog = getReferenceCatalog(catalogId);
+  if (!catalog) return '<p class="badge error" style="display:inline-block">Unknown catalog id — no data registered for it.</p>';
+  const preview = catalog.entries.slice(0, 5).map((e) => `<li>${escapeHtml(referenceEntryLabel(e))}</li>`).join('');
+  return `<p class="muted">${escapeHtml(catalog.label)}${catalog.partial ? ' — partial catalog, not the full range' : ''} (${catalog.entries.length} entries). Preview:</p>
+    <ul class="muted">${preview}</ul>`;
+}
+
 function schemaFieldEditor(candidateName: string, field: CuratedSchemaField): string {
   const idAttr = attr(candidateName);
   const optionsText = (field.options ?? []).map((o) => `${o.value} | ${o.label}`).join('\n');
   const warningsText = (field.warnings ?? []).join('\n');
-  const typeOpts = (['text', 'number', 'select', 'checkbox'] as const)
-    .map((t) => opt(t, cap(t), field.type))
+  const typeOpts = (['text', 'number', 'select', 'checkbox', 'reference-select'] as const)
+    .map((t) => opt(t, t === 'reference-select' ? 'Reference select' : cap(t), field.type))
     .join('');
+  const isReferenceSelect = field.type === 'reference-select';
+  const catalogOpts = REFERENCE_CATALOG_IDS
+    .map((cid) => opt(cid, `${REFERENCE_CATALOGS[cid].label}${REFERENCE_CATALOGS[cid].partial ? ' (partial)' : ''}`, field.referenceCatalogId ?? ''))
+    .join('');
+  const referenceSectionHtml = isReferenceSelect
+    ? `<p class="badge info" style="display:inline-block">Backed by a local reference catalog — display names come from static, checked-in data, not a live lookup.</p>
+      <label>Reference catalog</label>
+      <select data-bind="schema-field.referenceCatalogId" data-id="${idAttr}"><option value="">— choose a catalog —</option>${catalogOpts}</select>
+      ${referenceCatalogPreviewHtml(field.referenceCatalogId)}`
+    : '';
   return `<div class="card ext-tool">
     <div class="row" style="justify-content:space-between">
       <strong>${escapeHtml(field.label || field.key)}</strong>
@@ -1001,12 +1123,13 @@ function schemaFieldEditor(candidateName: string, field: CuratedSchemaField): st
       <div><label>Type</label><select data-bind="schema-field.type" data-id="${idAttr}">${typeOpts}</select></div>
       <div><label class="row" style="margin-top:1.4rem"><input type="checkbox" data-bind="schema-field.required" data-id="${idAttr}" style="width:auto"${field.required ? ' checked' : ''} /> &nbsp;Required</label></div>
     </div>
+    ${referenceSectionHtml}
     <label>Help text</label>
     <input type="text" data-bind="schema-field.helpText" data-id="${idAttr}" value="${attr(field.helpText ?? '')}" placeholder="Optional user-facing help text" />
-    <label>Default value</label>
+    <label>Default value${isReferenceSelect ? ' (numeric — the value a script/generator expects, not the display name)' : ''}</label>
     <input type="text" data-bind="schema-field.defaultValue" data-id="${idAttr}" value="${attr(String(field.defaultValue ?? ''))}" />
-    <label>Options — one per line, "value | label" (only used when type is Select)</label>
-    <textarea data-bind="schema-field.optionsText" data-id="${idAttr}" placeholder="option-a | Example option A">${escapeHtml(optionsText)}</textarea>
+    ${!isReferenceSelect ? `<label>Options — one per line, "value | label" (only used when type is Select)</label>
+    <textarea data-bind="schema-field.optionsText" data-id="${idAttr}" placeholder="option-a | Example option A">${escapeHtml(optionsText)}</textarea>` : ''}
     <label>Min / Max — optional, only used when type is Number</label>
     <div class="grid2">
       <div><input type="text" data-bind="schema-field.min" data-id="${idAttr}" value="${attr(String(field.min ?? ''))}" placeholder="Min" /></div>
@@ -1014,7 +1137,7 @@ function schemaFieldEditor(candidateName: string, field: CuratedSchemaField): st
     </div>
     <label>Warnings — one per line (optional)</label>
     <textarea data-bind="schema-field.warningsText" data-id="${idAttr}">${escapeHtml(warningsText)}</textarea>
-    ${field.inputHint ? `<p class="muted">Input hint: <code>${escapeHtml(field.inputHint)}</code> (informational only — no move/item database)</p>` : ''}
+    ${field.inputHint ? `<p class="muted">Input hint: <code>${escapeHtml(field.inputHint)}</code>${isReferenceSelect ? '' : ' (informational only — no reference catalog matched this hint)'}</p>` : ''}
     <div class="row" style="margin-top:0.5rem">
       <button class="btn danger small" data-action="toggle-schema-candidate-off" data-id="${idAttr}">Remove field</button>
     </div>
@@ -1353,6 +1476,15 @@ function renderScripts(): string {
 
   const cardsHtml = scriptCards || (p.scripts.length > 0 ? '<div class="empty">No scripts match this filter/search.</div>' : '<div class="empty">No scripts imported yet.</div>');
 
+  const unattachedSchemas = p.curatedSchemas.filter((s) => !s.scriptId);
+  const unattachedHtml = unattachedSchemas.length > 0
+    ? `<div class="card">
+        <h3>Unattached schemas <span class="pill">detached from any script</span></h3>
+        <p class="muted">These schemas still exist in this workspace and are still selectable in Run Script if reviewed, but no longer point at a specific script — re-import the script and edit a duplicate to reattach.</p>
+        ${unattachedSchemas.map((s) => renderCuratedSchemaCard(s, [])).join('')}
+      </div>`
+    : '';
+
   return `<h1>Manage Scripts <span class="pill">developer-only, informational</span></h1>
     <p class="muted">The recommended path is to fetch E-Sh4rk scripts from GitHub, review or apply a reviewed schema preset, then run them from Run Script. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
     ${emptyStateHtml}
@@ -1376,6 +1508,7 @@ function renderScripts(): string {
     </div>
     ${managementHtml}
     ${cardsHtml}
+    ${unattachedHtml}
     <details>
       <summary class="muted" style="cursor:pointer">Advanced / manual import — for offline use or a pinned local copy</summary>
       <p class="muted">Fetching from GitHub above is the recommended way to get E-Sh4rk scripts. Use local import only if you're offline, want a specific pinned copy, or are working with scripts that aren't on GitHub.</p>
@@ -2130,6 +2263,57 @@ async function handleClick(e: Event): Promise<void> {
       downloadText(`${base}.json`, serializeReviewedPresetForExport(preset), 'application/json');
       break;
     }
+    case 'edit-curated-schema': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      openSchemaEditorForExisting(schema, p);
+      render();
+      break;
+    }
+    case 'duplicate-curated-schema': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      const newId = nextDuplicateSchemaId(schema.id, p.curatedSchemas.map((s) => s.id));
+      upsertCuratedSchema(p.curatedSchemas, duplicateCuratedSchema(schema, newId));
+      commit();
+      break;
+    }
+    case 'detach-curated-schema': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      upsertCuratedSchema(p.curatedSchemas, detachCuratedSchema(schema));
+      commit();
+      break;
+    }
+    case 'set-schema-status': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      const status = el.dataset.status as CuratedSchemaStatus | undefined;
+      if (!schema || !status) break;
+      schema.status = status;
+      commit();
+      break;
+    }
+    case 'delete-curated-schema': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      const usageCount = countSavedOutputsUsingSchema(p.importedBlocks, schema.id);
+      const usageWarning = usageCount > 0
+        ? `\n\nNote: ${usageCount} saved output(s) were generated using this schema. They will not be deleted or altered, but you may want to review them.`
+        : '';
+      const confirmed = window.confirm(
+        `Delete this curated schema? This does not delete the script file or saved outputs.${usageWarning}`,
+      );
+      if (!confirmed) break;
+      removeCuratedSchema(p.curatedSchemas, schema.id);
+      if (state.schemaEditor?.id === schema.id) state.schemaEditor = null;
+      commit();
+      break;
+    }
     case 'attach-curated-schema':
       if (id) (document.getElementById(`curated-schema-input-${id}`) as HTMLInputElement | null)?.click();
       break;
@@ -2397,6 +2581,9 @@ function applyActionBinding(bind: string, id: string | undefined, value: string,
       ab.values[id] = coerceActionFieldValue(field, value, checked);
       break;
     }
+    case 'action.field-search':
+      if (id) ab.referenceSearch[id] = value;
+      break;
   }
 }
 

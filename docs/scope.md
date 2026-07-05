@@ -49,6 +49,31 @@ import a script, and a workspace is created for you in the background.
   to copy into your own generator by hand, and the paste-back flow only
   stores what you bring back from running it yourself.
 
+## Reference-data catalogs
+
+Curated schema fields for things like Gen III items and moves (`src/reference/`)
+can be backed by a small, local, **static** reference catalog instead of a raw
+number box — e.g. a "Move" field shows "Thunderbolt — 85" instead of just
+`85`. A few things are true of every catalog:
+
+- **Local and static.** Catalogs are checked-in source files, hand-entered
+  from publicly documented Generation III index numbering. They are never
+  fetched, scraped, or generated at runtime — see
+  [CONTRIBUTING.md](../CONTRIBUTING.md) for the network boundary this falls
+  under.
+- **A display convenience, not an authority.** A catalog entry's `value` is
+  the only thing ever stored or filled into a script; the name is
+  informational only. Existing local scripts/generators remain the source
+  of truth — a catalog lookup is never a claim that a value is correct for
+  your specific game revision.
+- **Often deliberately partial.** The current `gen3-items`/`gen3-moves`
+  catalogs cover only entries whose index is stable and well-documented,
+  not the full item/move list — this is surfaced in the UI (a "(partial)"
+  label) and in `ReferenceCatalog.partial`, never hidden.
+- **Reviewed before adding.** New catalogs or entries should be manually
+  checked against a real reference before being checked in, the same way a
+  curated schema itself is manually reviewed before being marked `reviewed`.
+
 ## Provenance and review
 
 Every piece of text this app shows you — typed, imported, filled by the

@@ -184,6 +184,20 @@ function schemaFromDefaultCandidates(script: ScriptFile): CuratedActionSchema {
 describe('fillScriptFromSchema on a real-script-shaped fixture (Move/MoveSlot/NPC)', () => {
   const script: ScriptFile = { id: 's1', filename: 'toy.txt', rawText: REAL_SHAPED_SCRIPT, importedAt: '2026-01-01T00:00:00.000Z' };
 
+  it('seeds Move as a reference-select field, but the filler still receives and writes only the numeric value', () => {
+    const schema = schemaFromDefaultCandidates(script);
+    const moveField = schema.fields.find((f) => f.variableName === 'Move')!;
+    expect(moveField.type).toBe('reference-select');
+    expect(moveField.referenceCatalogId).toBe('gen3-moves');
+
+    const result = fillScriptFromSchema(script.rawText, schema, { Move: 85, MoveSlot: '1', NPC: '3' });
+    expect(result.errors).toEqual([]);
+    expect(result.filledScriptText).toContain('Move = 85 @input:move');
+    // The numeric value is written bare — never the catalog display name or a quoted string.
+    expect(result.filledScriptText).not.toContain('Thunderbolt');
+    expect(result.filledScriptText).not.toContain('"85"');
+  });
+
   it('preserves the inline @input:move annotation instead of swallowing it when Move is filled', () => {
     const schema = schemaFromDefaultCandidates(script);
     const result = fillScriptFromSchema(script.rawText, schema, { Move: 99, MoveSlot: '1', NPC: '3' });

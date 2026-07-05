@@ -119,6 +119,8 @@ npm run audit:network   # fails on any unapproved network primitive/host in src/
 ```
 src/core         pure logic: types, normalizers, validators, review summary   (no I/O, no DOM)
 src/templates    read-only checklist templates
+src/reference    local, static reference-data catalogs (Gen III items/moves)
+                 for friendlier dropdowns — never fetched or scraped
 src/data         IndexedDB persistence, local JSON import/export, and the
                  one allowlisted E-Sh4rk GitHub fetch module
 src/report       self-contained printable HTML report renderer

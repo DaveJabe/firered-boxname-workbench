@@ -1,0 +1,132 @@
+// Local, static, checked-in catalog of Generation III move indices — used
+// only to make curated-schema "move" fields show a friendly name/value
+// dropdown instead of a raw number box.
+//
+// SOURCE: hand-entered from publicly documented Generation III move index
+// numbering (the kind of table Bulbapedia's "List of moves by index number
+// in Generation III" publishes). This file is NOT fetched, scraped, or
+// generated at runtime — it is static source code, reviewed and edited
+// like any other file in this repo. It is DELIBERATELY PARTIAL: moves 1-100
+// are the original, Generation I/II move set, whose index order has never
+// changed across Generation III games, so these are the highest-confidence
+// entries to start from. Later moves (Generation III originals, indices
+// 252-354) are not included yet. Treat any value not listed as unconfirmed,
+// and double-check anything you rely on against your own reference before
+// trusting it — this app's scripts and generator remain the source of
+// truth, not this catalog.
+
+import type { ReferenceCatalog } from '../core/referenceData.js';
+
+export const GEN3_MOVES_CATALOG: ReferenceCatalog = {
+  id: 'gen3-moves',
+  label: 'Generation III moves',
+  description: 'Move name/index lookup for curated schema "move" fields.',
+  partial: true,
+  sourceNote:
+    'Hand-entered from publicly documented Generation III move index numbering ' +
+    '(e.g. Bulbapedia\'s "List of moves by index number in Generation III"). ' +
+    'Covers moves 1-100 — the original Generation I/II move set, in the fixed ' +
+    'order shared by every Generation III game — not the full move list.',
+  entries: [
+    { value: 1, name: 'Pound', category: 'Normal' },
+    { value: 2, name: 'Karate Chop', category: 'Fighting' },
+    { value: 3, name: 'Double Slap', category: 'Normal' },
+    { value: 4, name: 'Comet Punch', category: 'Normal' },
+    { value: 5, name: 'Mega Punch', category: 'Normal' },
+    { value: 6, name: 'Pay Day', category: 'Normal' },
+    { value: 7, name: 'Fire Punch', category: 'Fire' },
+    { value: 8, name: 'Ice Punch', category: 'Ice' },
+    { value: 9, name: 'Thunder Punch', category: 'Electric' },
+    { value: 10, name: 'Scratch', category: 'Normal' },
+    { value: 11, name: 'Vice Grip', category: 'Normal' },
+    { value: 12, name: 'Guillotine', category: 'Normal' },
+    { value: 13, name: 'Razor Wind', category: 'Normal' },
+    { value: 14, name: 'Swords Dance', category: 'Normal' },
+    { value: 15, name: 'Cut', category: 'Normal' },
+    { value: 16, name: 'Gust', category: 'Flying' },
+    { value: 17, name: 'Wing Attack', category: 'Flying' },
+    { value: 18, name: 'Whirlwind', category: 'Normal' },
+    { value: 19, name: 'Fly', category: 'Flying' },
+    { value: 20, name: 'Bind', category: 'Normal' },
+    { value: 21, name: 'Slam', category: 'Normal' },
+    { value: 22, name: 'Vine Whip', category: 'Grass' },
+    { value: 23, name: 'Stomp', category: 'Normal' },
+    { value: 24, name: 'Double Kick', category: 'Fighting' },
+    { value: 25, name: 'Mega Kick', category: 'Normal' },
+    { value: 26, name: 'Jump Kick', category: 'Fighting' },
+    { value: 27, name: 'Rolling Kick', category: 'Fighting' },
+    { value: 28, name: 'Sand Attack', category: 'Ground' },
+    { value: 29, name: 'Headbutt', category: 'Normal' },
+    { value: 30, name: 'Horn Attack', category: 'Normal' },
+    { value: 31, name: 'Fury Attack', category: 'Normal' },
+    { value: 32, name: 'Horn Drill', category: 'Normal' },
+    { value: 33, name: 'Tackle', category: 'Normal' },
+    { value: 34, name: 'Body Slam', category: 'Normal' },
+    { value: 35, name: 'Wrap', category: 'Normal' },
+    { value: 36, name: 'Take Down', category: 'Normal' },
+    { value: 37, name: 'Thrash', category: 'Normal' },
+    { value: 38, name: 'Double-Edge', category: 'Normal' },
+    { value: 39, name: 'Tail Whip', category: 'Normal' },
+    { value: 40, name: 'Poison Sting', category: 'Poison' },
+    { value: 41, name: 'Twineedle', category: 'Bug' },
+    { value: 42, name: 'Pin Missile', category: 'Bug' },
+    { value: 43, name: 'Leer', category: 'Normal' },
+    { value: 44, name: 'Bite', category: 'Dark' },
+    { value: 45, name: 'Growl', category: 'Normal' },
+    { value: 46, name: 'Roar', category: 'Normal' },
+    { value: 47, name: 'Sing', category: 'Normal' },
+    { value: 48, name: 'Supersonic', category: 'Normal' },
+    { value: 49, name: 'Sonic Boom', category: 'Normal' },
+    { value: 50, name: 'Disable', category: 'Normal' },
+    { value: 51, name: 'Acid', category: 'Poison' },
+    { value: 52, name: 'Ember', category: 'Fire' },
+    { value: 53, name: 'Flamethrower', category: 'Fire' },
+    { value: 54, name: 'Mist', category: 'Ice' },
+    { value: 55, name: 'Water Gun', category: 'Water' },
+    { value: 56, name: 'Hydro Pump', category: 'Water' },
+    { value: 57, name: 'Surf', category: 'Water' },
+    { value: 58, name: 'Ice Beam', category: 'Ice' },
+    { value: 59, name: 'Blizzard', category: 'Ice' },
+    { value: 60, name: 'Psybeam', category: 'Psychic' },
+    { value: 61, name: 'Bubble Beam', category: 'Water' },
+    { value: 62, name: 'Aurora Beam', category: 'Ice' },
+    { value: 63, name: 'Hyper Beam', category: 'Normal' },
+    { value: 64, name: 'Peck', category: 'Flying' },
+    { value: 65, name: 'Drill Peck', category: 'Flying' },
+    { value: 66, name: 'Submission', category: 'Fighting' },
+    { value: 67, name: 'Low Kick', category: 'Fighting' },
+    { value: 68, name: 'Counter', category: 'Fighting' },
+    { value: 69, name: 'Seismic Toss', category: 'Fighting' },
+    { value: 70, name: 'Strength', category: 'Normal' },
+    { value: 71, name: 'Absorb', category: 'Grass' },
+    { value: 72, name: 'Mega Drain', category: 'Grass' },
+    { value: 73, name: 'Leech Seed', category: 'Grass' },
+    { value: 74, name: 'Growth', category: 'Normal' },
+    { value: 75, name: 'Razor Leaf', category: 'Grass' },
+    { value: 76, name: 'Solar Beam', category: 'Grass' },
+    { value: 77, name: 'Poison Powder', category: 'Poison' },
+    { value: 78, name: 'Stun Spore', category: 'Grass' },
+    { value: 79, name: 'Sleep Powder', category: 'Grass' },
+    { value: 80, name: 'Petal Dance', category: 'Grass' },
+    { value: 81, name: 'String Shot', category: 'Bug' },
+    { value: 82, name: 'Dragon Rage', category: 'Dragon' },
+    { value: 83, name: 'Fire Spin', category: 'Fire' },
+    { value: 84, name: 'Thunder Shock', category: 'Electric' },
+    { value: 85, name: 'Thunderbolt', category: 'Electric' },
+    { value: 86, name: 'Thunder Wave', category: 'Electric' },
+    { value: 87, name: 'Thunder', category: 'Electric' },
+    { value: 88, name: 'Rock Throw', category: 'Rock' },
+    { value: 89, name: 'Earthquake', category: 'Ground' },
+    { value: 90, name: 'Fissure', category: 'Ground' },
+    { value: 91, name: 'Dig', category: 'Ground' },
+    { value: 92, name: 'Toxic', category: 'Poison' },
+    { value: 93, name: 'Confusion', category: 'Psychic' },
+    { value: 94, name: 'Psychic', category: 'Psychic' },
+    { value: 95, name: 'Hypnosis', category: 'Psychic' },
+    { value: 96, name: 'Meditate', category: 'Psychic' },
+    { value: 97, name: 'Agility', category: 'Psychic' },
+    { value: 98, name: 'Quick Attack', category: 'Normal' },
+    { value: 99, name: 'Rage', category: 'Normal' },
+    { value: 100, name: 'Teleport', category: 'Psychic' },
+  ],
+};

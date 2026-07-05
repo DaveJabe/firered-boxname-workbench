@@ -13,10 +13,21 @@ import type {
   CuratedSchemaField,
   CuratedSchemaStatus,
   Project,
+  ReferenceCatalogId,
   VariableCandidate,
 } from './types.js';
 import { isBlank } from './normalize.js';
 import { isUnknownTarget } from './gameTarget.js';
+
+/**
+ * Which local reference catalog a recognized `@input:xxx` scanner
+ * annotation should seed a field with — see core/referenceData.ts. An
+ * annotation not listed here has no catalog effect on the seeded field.
+ */
+const INPUT_HINT_CATALOGS: Readonly<Record<string, ReferenceCatalogId>> = {
+  item: 'gen3-items',
+  move: 'gen3-moves',
+};
 
 const STATUSES: readonly CuratedSchemaStatus[] = ['draft', 'reviewed', 'disabled'];
 
@@ -49,7 +60,7 @@ function humanizeVariableName(name: string): string {
 /** Guess a field's default value from its candidate's raw scanned text — never invented. */
 function defaultValueFromRawValue(type: CuratedSchemaField['type'], rawValue: string): ActionFieldValue {
   const v = rawValue.trim();
-  if (type === 'number') {
+  if (type === 'number' || type === 'reference-select') {
     const n = Number(v);
     return Number.isNaN(n) ? 0 : n;
   }
@@ -109,6 +120,13 @@ export function candidateToDraftField(candidate: VariableCandidate): CuratedSche
   const allowedValues = type === 'number' ? inferAllowedValuesFromComment(candidate.nearbyComment) : undefined;
   if (allowedValues) type = 'select';
 
+  // A recognized @input:item/@input:move annotation is a stronger signal
+  // than the inferred type — it seeds a reference-select field backed by
+  // the matching local catalog instead, taking priority over any inferred
+  // select options above.
+  const referenceCatalogId = candidate.inputHint ? INPUT_HINT_CATALOGS[candidate.inputHint] : undefined;
+  if (referenceCatalogId) type = 'reference-select';
+
   const field: CuratedSchemaField = {
     key: candidate.name,
     label: humanizeVariableName(candidate.name),
@@ -120,7 +138,9 @@ export function candidateToDraftField(candidate: VariableCandidate): CuratedSche
   if (candidate.nearbyComment) field.helpText = candidate.nearbyComment;
   if (candidate.annotation) field.warnings = [`Scanner annotation: ${candidate.annotation}`];
   if (candidate.inputHint) field.inputHint = candidate.inputHint;
-  if (allowedValues) {
+  if (referenceCatalogId) {
+    field.referenceCatalogId = referenceCatalogId;
+  } else if (allowedValues) {
     field.options = allowedValues.map((n) => ({ value: String(n), label: String(n) }));
   } else if (type === 'select') {
     const v = candidate.rawValue.trim();

@@ -28,6 +28,7 @@ import type {
 import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/sources.js';
 import { TARGET_GAMES, TARGET_LANGUAGES, TARGET_REVISIONS, UNKNOWN_TARGET } from '../core/gameTarget.js';
 import { ESHARK_CATEGORIES, ESHARK_SOURCE_PROFILES } from '../core/esharkSource.js';
+import { REFERENCE_CATALOG_IDS } from '../reference/index.js';
 
 const DB_NAME = 'firered-research-notebook';
 const STORE = 'projects';
@@ -153,7 +154,7 @@ const RULES = [
 const SECTION_KINDS = ['header', 'body'] as const;
 const INFERRED_FIELD_KINDS = ['number', 'checkbox', 'select', 'text', 'unknown'] as const;
 const CANDIDATE_CONFIDENCES = ['high', 'medium', 'low'] as const;
-const ACTION_FIELD_TYPES = ['text', 'number', 'select', 'checkbox'] as const;
+const ACTION_FIELD_TYPES = ['text', 'number', 'select', 'checkbox', 'reference-select'] as const;
 const CURATED_SCHEMA_STATUSES = ['draft', 'reviewed', 'disabled'] as const;
 
 function fail(msg: string): never {
@@ -535,6 +536,9 @@ function parseCuratedSchemaField(v: unknown, path: string): CuratedSchemaField {
   if (o.defaultValue !== undefined) field.defaultValue = asActionFieldValue(o.defaultValue, `${path}.defaultValue`);
   const inputHint = asOptString(o.inputHint, `${path}.inputHint`);
   if (inputHint !== undefined) field.inputHint = inputHint;
+  if (o.referenceCatalogId !== undefined) {
+    field.referenceCatalogId = asEnum(o.referenceCatalogId, REFERENCE_CATALOG_IDS, `${path}.referenceCatalogId`);
+  }
   if (o.min !== undefined) field.min = asNumber(o.min, `${path}.min`);
   if (o.max !== undefined) field.max = asNumber(o.max, `${path}.max`);
   return field;

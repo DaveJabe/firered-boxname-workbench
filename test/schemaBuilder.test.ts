@@ -25,8 +25,8 @@ function makeProject(): Project {
 // route step, opcode, or payload byte.
 const TOY_SCRIPT = [
   '; sample header for a toy fixture',
-  'widgetCount = 5 ; example count, @input:item',
-  'widgetLabel = "SAMPLE" ; example label, @input:move',
+  'widgetCount = 5 ; example count, @input:count',
+  'widgetLabel = "SAMPLE" ; example label, @input:label',
   'widgetEnabled = true',
   'WIDGET_KIND = TOY_CONST',
   'weirdValue = something_odd',
@@ -77,8 +77,8 @@ describe('candidateToDraftField', () => {
     expect(field.variableName).toBe('widgetCount');
     expect(field.required).toBe(false);
     expect(field.defaultValue).toBe(5);
-    expect(field.helpText).toBe('example count, @input:item');
-    expect(field.warnings).toEqual(['Scanner annotation: @input:item']);
+    expect(field.helpText).toBe('example count, @input:count');
+    expect(field.warnings).toEqual(['Scanner annotation: @input:count']);
   });
 
   it('maps a text candidate to a text field, unquoting the default value', () => {
@@ -245,10 +245,31 @@ describe('candidateToDraftField preserves @input:xxx hints and infers simple exp
     expect(field.defaultValue).toBe('2');
   });
 
-  it('does not invent a constraint from Move\'s prose comment, which has no range or list', () => {
+  it('seeds Move as a reference-select field (from @input:move) rather than inventing a constraint from its prose comment', () => {
     const field = candidateToDraftField(byName('Move'));
-    expect(field.type).toBe('number');
+    expect(field.type).toBe('reference-select');
+    expect(field.referenceCatalogId).toBe('gen3-moves');
     expect(field.options).toBeUndefined();
+    expect(field.defaultValue).toBe(1); // the candidate's own scanned rawValue, not invented
+  });
+
+  it('seeds a field as a gen3-items reference-select from an @input:item annotation', () => {
+    const field = candidateToDraftField({
+      name: 'HeldItem', rawValue: '13', line: 1, inferredType: 'number', confidence: 'high',
+      internal: false, annotation: '@input:item', inputHint: 'item',
+    });
+    expect(field.type).toBe('reference-select');
+    expect(field.referenceCatalogId).toBe('gen3-items');
+    expect(field.defaultValue).toBe(13);
+  });
+
+  it('an unrecognized @input:xxx hint has no catalog effect — the field keeps its inferred type', () => {
+    const field = candidateToDraftField({
+      name: 'SomeFlag', rawValue: '1', line: 1, inferredType: 'number', confidence: 'medium',
+      internal: false, annotation: '@input:flag', inputHint: 'flag',
+    });
+    expect(field.type).toBe('number');
+    expect(field.referenceCatalogId).toBeUndefined();
   });
 });
 

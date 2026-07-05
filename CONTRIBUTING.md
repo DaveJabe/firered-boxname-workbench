@@ -51,6 +51,12 @@ be rejected regardless of how convenient the feature seems.
   `npm run audit:network` and the CSP in `index.html` enforce this.
 - Keep the runtime dependency count at **zero**. New dev dependencies should be
   rare and justified.
+- Keep `src/reference/` catalogs **local and static**: checked in, never
+  fetched or scraped at runtime, and manually reviewed before adding a new
+  catalog or entries to an existing one. A catalog entry's `value` is the
+  only thing ever stored/filled into a script — its display name is
+  informational only, not an authority. Mark a catalog `partial: true`
+  (and say so in the UI) rather than implying coverage it doesn't have.
 
 ## Definition of done for a change
 

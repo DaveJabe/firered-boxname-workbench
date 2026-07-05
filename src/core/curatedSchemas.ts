@@ -7,10 +7,25 @@
 // way — it never reads variableName, helpText, or warnings, so no script
 // filling or real generation can happen through this path.
 
-import type { ActionTemplate } from '../templates/action-templates.js';
-import type { CuratedActionSchema, GameTarget } from './types.js';
+import type { ActionField, ActionTemplate } from '../templates/action-templates.js';
+import type { ActionFieldOption, CuratedActionSchema, CuratedSchemaField, GameTarget, ImportedTextBlock } from './types.js';
 import { normalizeLabel } from './normalize.js';
 import { checkTargetCompatibility } from './gameTarget.js';
+import { referenceEntryLabel } from './referenceData.js';
+import { getReferenceCatalog } from '../reference/index.js';
+
+/**
+ * For a 'reference-select' field, resolve its options from the local static
+ * catalog named by referenceCatalogId — never fetched, never looked up
+ * remotely. Falls back to any hand-set options if the catalog id isn't
+ * registered (should not normally happen, but must never crash rendering).
+ */
+function resolveFieldOptions(field: CuratedSchemaField): readonly ActionFieldOption[] | undefined {
+  if (field.type !== 'reference-select') return field.options;
+  const catalog = field.referenceCatalogId ? getReferenceCatalog(field.referenceCatalogId) : undefined;
+  if (!catalog) return field.options;
+  return catalog.entries.map((e) => ({ value: String(e.value), label: referenceEntryLabel(e) }));
+}
 
 /** Adapt a CuratedActionSchema to the same shape the Action Builder already
  *  renders/validates for built-in templates — no catalog wiring needed. */
@@ -19,16 +34,18 @@ export function toActionTemplateShape(schema: CuratedActionSchema): ActionTempla
     id: schema.id,
     label: schema.label,
     description: schema.description,
-    fields: schema.fields.map((f) => ({
-      key: f.key,
-      label: f.label,
-      type: f.type,
-      required: f.required,
-      options: f.options,
-      defaultValue: f.defaultValue,
-      min: f.min,
-      max: f.max,
-    })),
+    fields: schema.fields.map(
+      (f): ActionField => ({
+        key: f.key,
+        label: f.label,
+        type: f.type,
+        required: f.required,
+        options: resolveFieldOptions(f),
+        defaultValue: f.defaultValue,
+        min: f.min,
+        max: f.max,
+      }),
+    ),
   };
 }
 
@@ -63,6 +80,51 @@ export function upsertCuratedSchema(schemas: CuratedActionSchema[], schema: Cura
   const idx = schemas.findIndex((s) => s.id === schema.id);
   if (idx >= 0) schemas[idx] = schema;
   else schemas.push(schema);
+}
+
+/** Remove one schema by id, in place. Never touches Project.scripts or Project.importedBlocks. */
+export function removeCuratedSchema(schemas: CuratedActionSchema[], id: string): void {
+  const idx = schemas.findIndex((s) => s.id === id);
+  if (idx >= 0) schemas.splice(idx, 1);
+}
+
+/**
+ * A new, human-readable id for a duplicate of `baseId` that doesn't collide
+ * with any id already in use — "<baseId>-copy", then "-copy-2", "-copy-3", etc.
+ */
+export function nextDuplicateSchemaId(baseId: string, existingIds: readonly string[]): string {
+  const existing = new Set(existingIds);
+  let candidate = `${baseId}-copy`;
+  let n = 2;
+  while (existing.has(candidate)) {
+    candidate = `${baseId}-copy-${n}`;
+    n += 1;
+  }
+  return candidate;
+}
+
+/** A copy of a schema under a new id — same script attachment, fields, and status as the original. */
+export function duplicateCuratedSchema(schema: CuratedActionSchema, newId: string): CuratedActionSchema {
+  return { ...schema, id: newId };
+}
+
+/** A copy of a schema no longer attached to any script, leaving the original schemas array untouched. */
+export function detachCuratedSchema(schema: CuratedActionSchema): CuratedActionSchema {
+  const detached: CuratedActionSchema = { ...schema };
+  delete detached.scriptId;
+  delete detached.scriptFilename;
+  return detached;
+}
+
+/**
+ * How many saved output blocks (Saved Outputs / Imported text) were
+ * generated using this schema, purely for a pre-deletion warning — deleting
+ * or detaching a schema never removes, alters, or invalidates these blocks;
+ * TextSource.actionId is a stored string, never re-resolved against
+ * Project.curatedSchemas after the fact.
+ */
+export function countSavedOutputsUsingSchema(blocks: readonly ImportedTextBlock[], schemaId: string): number {
+  return blocks.filter((b) => b.source.actionId === schemaId).length;
 }
 
 /**

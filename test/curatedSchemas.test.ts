@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { ActionInput, CuratedActionSchema, ScriptFile } from '../src/core/types.js';
+import type { ActionInput, CuratedActionSchema, ImportedTextBlock, ScriptFile } from '../src/core/types.js';
 import { createProject } from '../src/core/factory.js';
 import { scanScript } from '../src/core/scriptScanner.js';
 import { missingRequiredActionFields } from '../src/core/actionInput.js';
@@ -11,6 +11,11 @@ import {
   supportsRevision,
   defaultRunnableSchemas,
   advancedRunnableSchemas,
+  removeCuratedSchema,
+  nextDuplicateSchemaId,
+  duplicateCuratedSchema,
+  detachCuratedSchema,
+  countSavedOutputsUsingSchema,
 } from '../src/core/curatedSchemas.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 import {
@@ -301,5 +306,193 @@ describe('defaultRunnableSchemas / advancedRunnableSchemas — Run Script target
     expect(v10.actionKey).toBe(v11.actionKey); // same stable action concept
     expect(defaultRunnableSchemas([v10, v11], fireRed10).map((s) => s.id)).toEqual(['teach-any-move-fr-en-10']);
     expect(defaultRunnableSchemas([v10, v11], fireRed11).map((s) => s.id)).toEqual(['teach-any-move-fr-en-11']);
+  });
+});
+
+function makeBlock(over: Partial<ImportedTextBlock> = {}): ImportedTextBlock {
+  return {
+    id: 'block-1', title: 'Toy output', categoryLabel: 'Filled script', revisionLabel: 'Rev 1',
+    rawText: 'toy output text', notes: '',
+    source: { type: 'filled-script', label: 'Filled script (this app)', importedAt: ISO, schemaVersion: 1 },
+    ...over,
+  };
+}
+
+describe('schema management: delete/duplicate/detach', () => {
+  it('removeCuratedSchema deletes a schema by id, leaving others untouched', () => {
+    const schemas = [makeCuratedSchema({ id: 'a' }), makeCuratedSchema({ id: 'b' })];
+    removeCuratedSchema(schemas, 'a');
+    expect(schemas.map((s) => s.id)).toEqual(['b']);
+  });
+
+  it('deleting a schema never touches Project.scripts — the script file itself survives', () => {
+    const project = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    const script = makeScriptFile();
+    project.scripts.push(script);
+    project.curatedSchemas.push(makeCuratedSchema({ scriptId: script.id }));
+
+    removeCuratedSchema(project.curatedSchemas, 'toy-schema');
+    expect(project.curatedSchemas).toEqual([]);
+    expect(project.scripts).toHaveLength(1);
+    expect(project.scripts[0].id).toBe(script.id);
+    expect(project.scripts[0].rawText).toBe(TOY_SCRIPT);
+  });
+
+  it('deleting a schema removes it from Run Script default and advanced candidates', () => {
+    const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+    const schemas = [makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 })];
+    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(1);
+    removeCuratedSchema(schemas, 'a');
+    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
+    expect(advancedRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
+  });
+
+  it('disabling a schema removes it from Run Script default and advanced candidates', () => {
+    const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+    const schemas = [makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 })];
+    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(1);
+    schemas[0].status = 'disabled';
+    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
+    expect(advancedRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
+    expect(isSchemaSelectable(schemas[0])).toBe(false);
+  });
+
+  it('draft schemas stay out of the default list but remain in the advanced list; reviewed+exact-target stays in the default list', () => {
+    const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+    const draft = makeCuratedSchema({ id: 'a', status: 'draft', target: fireRed10 });
+    const reviewed = makeCuratedSchema({ id: 'b', status: 'reviewed', target: fireRed10 });
+    const schemas = [draft, reviewed];
+    expect(defaultRunnableSchemas(schemas, fireRed10).map((s) => s.id)).toEqual(['b']);
+    expect(advancedRunnableSchemas(schemas, fireRed10).map((s) => s.id)).toEqual(['a']);
+  });
+
+  it('nextDuplicateSchemaId avoids collisions, incrementing a numeric suffix', () => {
+    expect(nextDuplicateSchemaId('toy-schema', ['toy-schema'])).toBe('toy-schema-copy');
+    expect(nextDuplicateSchemaId('toy-schema', ['toy-schema', 'toy-schema-copy'])).toBe('toy-schema-copy-2');
+    expect(nextDuplicateSchemaId('toy-schema', ['toy-schema', 'toy-schema-copy', 'toy-schema-copy-2'])).toBe('toy-schema-copy-3');
+  });
+
+  it('duplicateCuratedSchema copies fields/status/target under a new id', () => {
+    const original = makeCuratedSchema({ id: 'toy-schema', status: 'reviewed' });
+    const copy = duplicateCuratedSchema(original, 'toy-schema-copy');
+    expect(copy.id).toBe('toy-schema-copy');
+    expect(copy.id).not.toBe(original.id);
+    expect(copy.fields).toEqual(original.fields);
+    expect(copy.status).toBe(original.status);
+    expect(copy.target).toEqual(original.target);
+    expect(copy.scriptId).toBe(original.scriptId);
+  });
+
+  it('detachCuratedSchema clears scriptId/scriptFilename without mutating the original', () => {
+    const original = makeCuratedSchema({ scriptId: 'script-1', scriptFilename: 'toy.txt' });
+    const detached = detachCuratedSchema(original);
+    expect(detached.scriptId).toBeUndefined();
+    expect(detached.scriptFilename).toBeUndefined();
+    expect(original.scriptId).toBe('script-1'); // input untouched
+    expect(detached.fields).toEqual(original.fields);
+  });
+
+  it('a detached (scriptId-less) reviewed schema is still selectable/runnable — detach is not the same as delete or disable', () => {
+    const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+    const detached = detachCuratedSchema(makeCuratedSchema({ status: 'reviewed', target: fireRed10 }));
+    expect(isSchemaSelectable(detached)).toBe(true);
+    expect(defaultRunnableSchemas([detached], fireRed10)).toHaveLength(1);
+  });
+});
+
+describe('deleting/detaching a schema never corrupts saved outputs', () => {
+  it('countSavedOutputsUsingSchema counts blocks whose source.actionId matches this schema', () => {
+    const blocks = [
+      makeBlock({ id: 'b1', source: { type: 'filled-script', label: 'x', importedAt: ISO, schemaVersion: 1, actionId: 'toy-schema' } }),
+      makeBlock({ id: 'b2', source: { type: 'filled-script', label: 'x', importedAt: ISO, schemaVersion: 1, actionId: 'other-schema' } }),
+      makeBlock({ id: 'b3', source: { type: 'filled-script', label: 'x', importedAt: ISO, schemaVersion: 1, actionId: 'toy-schema' } }),
+    ];
+    expect(countSavedOutputsUsingSchema(blocks, 'toy-schema')).toBe(2);
+    expect(countSavedOutputsUsingSchema(blocks, 'other-schema')).toBe(1);
+    expect(countSavedOutputsUsingSchema(blocks, 'nonexistent')).toBe(0);
+  });
+
+  it('a saved output block referencing a schema keeps its rawText and provenance string intact after the schema is deleted', () => {
+    const project = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    project.curatedSchemas.push(makeCuratedSchema({ id: 'toy-schema' }));
+    project.importedBlocks.push(
+      makeBlock({ source: { type: 'filled-script', label: 'x', importedAt: ISO, schemaVersion: 1, actionId: 'toy-schema' } }),
+    );
+
+    removeCuratedSchema(project.curatedSchemas, 'toy-schema');
+
+    expect(project.curatedSchemas).toEqual([]);
+    expect(project.importedBlocks).toHaveLength(1);
+    expect(project.importedBlocks[0].rawText).toBe('toy output text');
+    expect(project.importedBlocks[0].source.actionId).toBe('toy-schema'); // stored string, never re-resolved
+  });
+
+  it('project export/import round-trips correctly after a schema has been deleted', () => {
+    const project = createProject(
+      { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+      makeIdGen(),
+      () => ISO,
+    );
+    const script = makeScriptFile();
+    project.scripts.push(script);
+    project.curatedSchemas.push(makeCuratedSchema({ id: 'to-delete', scriptId: script.id }));
+    project.curatedSchemas.push(makeCuratedSchema({ id: 'keeper', scriptId: script.id }));
+    removeCuratedSchema(project.curatedSchemas, 'to-delete');
+
+    const roundTripped = importProjectJson(exportProjectJson(project));
+    expect(roundTripped.curatedSchemas.map((s) => s.id)).toEqual(['keeper']);
+    expect(roundTripped.scripts).toHaveLength(1);
+  });
+});
+
+describe('toActionTemplateShape — reference-select fields resolve options from the local catalog', () => {
+  it('resolves options as "Name — value" from the gen3-moves catalog for a reference-select field', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Move', label: 'Move', type: 'reference-select', required: true, variableName: 'Move', referenceCatalogId: 'gen3-moves' },
+      ],
+    });
+    const template = toActionTemplateShape(schema);
+    const moveField = template.fields[0];
+    expect(moveField.type).toBe('reference-select');
+    expect(moveField.options?.some((o) => o.value === '85' && o.label === 'Thunderbolt — 85')).toBe(true);
+  });
+
+  it('resolves options from the gen3-items catalog for a reference-select field', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Item', label: 'Item', type: 'reference-select', required: false, variableName: 'HeldItem', referenceCatalogId: 'gen3-items' },
+      ],
+    });
+    const template = toActionTemplateShape(schema);
+    expect(template.fields[0].options?.some((o) => o.value === '13' && o.label === 'Potion — 13')).toBe(true);
+  });
+
+  it('falls back to any hand-set options rather than crashing when referenceCatalogId is missing', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Item', label: 'Item', type: 'reference-select', required: false, variableName: 'HeldItem', options: [{ value: '1', label: 'Fallback' }] },
+      ],
+    });
+    const template = toActionTemplateShape(schema);
+    expect(template.fields[0].options).toEqual([{ value: '1', label: 'Fallback' }]);
+  });
+
+  it('leaves plain select/number/text/checkbox fields unaffected — no catalog resolution attempted', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'a', label: 'A', type: 'select', required: false, variableName: 'a', options: [{ value: 'x', label: 'X' }] },
+      ],
+    });
+    const template = toActionTemplateShape(schema);
+    expect(template.fields[0].options).toEqual([{ value: 'x', label: 'X' }]);
   });
 });

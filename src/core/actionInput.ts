@@ -10,6 +10,9 @@ function emptyFieldValue(field: ActionField): ActionFieldValue {
   if (field.type === 'checkbox') return false;
   if (field.type === 'number') return 0;
   if (field.type === 'select') return field.options?.[0]?.value ?? '';
+  // reference-select stores a number, like 'number' — but defaults to the
+  // catalog's first option if there is one, like 'select'.
+  if (field.type === 'reference-select') return Number(field.options?.[0]?.value ?? 0);
   return '';
 }
 
@@ -23,7 +26,7 @@ export function defaultActionValues(template: ActionTemplate): Record<string, Ac
 /** Coerce a raw form value to the field's declared type. */
 export function coerceActionFieldValue(field: ActionField, value: string, checked: boolean | undefined): ActionFieldValue {
   if (field.type === 'checkbox') return checked ?? false;
-  if (field.type === 'number') {
+  if (field.type === 'number' || field.type === 'reference-select') {
     const n = Number(value);
     return Number.isNaN(n) ? 0 : n;
   }
@@ -39,7 +42,7 @@ export function missingRequiredActionFields(
     if (!f.required) return false;
     const v = values[f.key];
     if (f.type === 'text') return isBlank(typeof v === 'string' ? v : '');
-    if (f.type === 'number') return typeof v !== 'number' || Number.isNaN(v);
+    if (f.type === 'number' || f.type === 'reference-select') return typeof v !== 'number' || Number.isNaN(v);
     if (f.type === 'select') return typeof v !== 'string' || v === '';
     return false;
   });

@@ -216,8 +216,22 @@ export const DEFAULT_VALIDATION_SETTINGS: ValidationSettings = {
 /** A single field's value, as entered by the user in the Action Builder. */
 export type ActionFieldValue = string | number | boolean;
 
-/** A concrete, renderable Action Builder field shape — no 'unknown' variant. */
-export type ActionFieldType = 'text' | 'number' | 'select' | 'checkbox';
+/**
+ * A concrete, renderable Action Builder field shape — no 'unknown' variant.
+ * 'reference-select' behaves like 'select' for rendering (a dropdown of
+ * catalog-derived options) but like 'number' for storage/coercion — see
+ * core/referenceData.ts. Its options are resolved from a static local
+ * catalog, never fetched or looked up remotely.
+ */
+export type ActionFieldType = 'text' | 'number' | 'select' | 'checkbox' | 'reference-select';
+
+/**
+ * Which local static reference-data catalog backs a 'reference-select'
+ * field. See core/referenceData.ts. Extend this union (and register a new
+ * catalog in src/reference/index.ts) to add flags/variables/maps/species/
+ * abilities later.
+ */
+export type ReferenceCatalogId = 'gen3-items' | 'gen3-moves';
 
 /** A neutral, user-facing option for a 'select' field. */
 export interface ActionFieldOption {
@@ -479,10 +493,15 @@ export interface CuratedSchemaField {
   defaultValue?: ActionFieldValue;
   /**
    * A clean input-kind hint carried over from a scanner annotation (e.g.
-   * "move" from `@input:move`) — informational only, never looked up against
-   * any move/item database.
+   * "move" from `@input:move`). The schema builder uses this to seed a new
+   * field as type 'reference-select' backed by a matching local catalog
+   * (see core/referenceData.ts) — display names come from that static,
+   * checked-in catalog only; nothing is looked up remotely or against any
+   * live move/item database.
    */
   inputHint?: string;
+  /** Only meaningful for type 'reference-select'. Which local catalog backs this field. */
+  referenceCatalogId?: ReferenceCatalogId;
   /** Only meaningful for type 'number'. Display-only range hint — never enforced or evaluated. */
   min?: number;
   max?: number;

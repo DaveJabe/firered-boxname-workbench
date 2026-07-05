@@ -62,7 +62,10 @@ exported or printed without being reviewable first.
   script/generator from within this app (subprocess execution, Tauri, or any
   other direct integration) — is out of scope. This document describes the
   boundary that would apply if it were ever proposed; it does not describe
-  an existing or planned feature.
+  an existing or planned feature. See
+  [docs/generator-adapter-contract.md](./generator-adapter-contract.md) for
+  the (unimplemented) type-only shape a future adapter would need to fit
+  the existing schema-filling/output-parsing pipeline.
 - **ROM/save-file/emulator handling**, if ever added, needs its own branch and
   its own update to this document.
 

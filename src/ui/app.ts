@@ -57,6 +57,14 @@ import {
 } from '../core/scriptPack.js';
 import { findMatchingPreset, applyPreset } from '../core/schemaPresets.js';
 import { SCHEMA_PRESETS } from '../templates/schema-presets.js';
+import { summarizeSupportedScripts } from '../core/supportedScripts.js';
+import {
+  matchReviewedPresets,
+  buildCuratedSchemaFromPreset,
+  buildReviewedPresetExport,
+  serializeReviewedPresetForExport,
+} from '../core/reviewedSchemaPresets.js';
+import { REVIEWED_SCHEMA_PRESETS } from '../templates/reviewed-schema-presets.js';
 import {
   TARGET_GAMES,
   TARGET_LANGUAGES,
@@ -953,6 +961,9 @@ function renderCuratedSchemaCard(schema: CuratedActionSchema, candidates: readon
     <p class="muted">${escapeHtml(schema.description)}</p>
     ${schema.supportedRevisionLabels.length ? `<p class="muted">Supported revisions: ${schema.supportedRevisionLabels.map((r) => escapeHtml(r)).join(', ')}</p>` : ''}
     <table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Variable</th><th>Scan candidate</th><th>Help</th><th>Warnings</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn small" data-action="export-reviewed-preset" data-id="${attr(schema.id)}">Export as reviewed preset</button>
+    </div>
   </div>`;
 }
 
@@ -1140,6 +1151,38 @@ function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: P
   </div>`;
 }
 
+/**
+ * "Reviewed schema preset available" — distinct from presetSuggestionHtml
+ * below: these are the built-in, human-reviewed presets, so applying one
+ * keeps its 'reviewed' status. Every match still requires an explicit
+ * per-preset button click; when more than one preset matches, each gets
+ * its own labeled button rather than picking one automatically.
+ */
+function reviewedPresetSuggestionHtml(s: ScriptFile, project: Project): string {
+  const matches = matchReviewedPresets(REVIEWED_SCHEMA_PRESETS, {
+    filename: s.filename,
+    title: s.lastScan?.title,
+    category: s.category,
+  });
+  const candidates = matches.filter((m) => !project.curatedSchemas.some((cs) => cs.id === `${m.preset.id}-for-${s.id}`));
+  if (candidates.length === 0) return '';
+
+  const buttons = candidates
+    .map(
+      (m) =>
+        `<button class="btn small primary" data-action="apply-reviewed-preset" data-id="${attr(s.id)}" data-preset="${attr(m.preset.id)}">Apply "${escapeHtml(m.preset.label)}"</button>`,
+    )
+    .join(' ');
+  const heading = candidates.length === 1
+    ? `Reviewed schema preset available: ${escapeHtml(candidates[0].preset.label)}`
+    : `${candidates.length} reviewed schema presets could apply — choose one:`;
+
+  return `<div class="badge info" style="display:block;margin:0.4rem 0">
+    ${heading}
+    <div class="row" style="margin-top:0.4rem">${buttons}</div>
+  </div>`;
+}
+
 function presetSuggestionHtml(s: ScriptFile, project: Project): string {
   const preset = findMatchingPreset(SCHEMA_PRESETS, { filename: s.filename, title: s.lastScan?.title });
   if (!preset) return '';
@@ -1171,6 +1214,7 @@ function renderScriptCard(s: ScriptFile, project: Project): string {
     </div>
     <label>Notes</label>
     <input type="text" data-bind="script.notes" data-id="${attr(s.id)}" value="${attr(s.notes ?? '')}" placeholder="Optional notes about this script" aria-label="Script notes" />
+    ${reviewedPresetSuggestionHtml(s, project)}
     ${presetSuggestionHtml(s, project)}
     <label>Script text (read-only, stored verbatim)</label>
     ${lineNumberView(s.rawText)}
@@ -1252,6 +1296,38 @@ function scriptSummaryTable(rows: ScriptPackRow[]): string {
   return `<table><thead><tr><th>Filename</th><th>Relative path</th><th>Title</th><th>Target</th><th>Category</th><th>Candidates</th><th>User-facing</th><th>Internal/helper</th><th>Schema attached</th><th></th></tr></thead><tbody>${trs}</tbody></table>`;
 }
 
+function supportedScriptsHtml(project: Project): string {
+  if (project.scripts.length === 0) return '';
+  const summary = summarizeSupportedScripts(project.scripts, project.curatedSchemas);
+
+  const readyRows = summary.ready
+    .map(
+      ({ script, schema }) => `<tr>
+        <td>${escapeHtml(schema.label)}</td>
+        <td>${escapeHtml(script.filename)}</td>
+        <td>${escapeHtml(targetLabel(schema.target))}</td>
+        <td>${schema.fields.length}</td>
+        <td><span class="pill status-${escapeHtml(schema.status)}">${escapeHtml(schema.status)}</span></td>
+        <td><button class="btn small" data-action="run-supported-script" data-id="${attr(schema.id)}">Run</button></td>
+      </tr>`,
+    )
+    .join('');
+
+  return `<div class="card">
+    <h3>Supported scripts</h3>
+    <p class="muted">A script is "Ready" once a reviewed schema with an explicit target is attached to it — apply a reviewed preset, or create and review a curated schema.</p>
+    <div class="row filters" role="group" aria-label="Support status">
+      <span class="chip">Ready: ${summary.ready.length}</span>
+      <span class="chip">Needs review: ${summary.needsReview.length}</span>
+      <span class="chip">No candidate fields: ${summary.noCandidates.length}</span>
+      <span class="chip">Disabled/incompatible target: ${summary.disabledOrIncompatible.length}</span>
+    </div>
+    ${summary.ready.length > 0
+      ? `<table><thead><tr><th>Action</th><th>Script</th><th>Target</th><th>Fields</th><th>Status</th><th></th></tr></thead><tbody>${readyRows}</tbody></table>`
+      : '<p class="muted">No scripts are ready to run for this target yet. Apply a reviewed schema preset below, or create/review a curated schema, then match Run Script\'s target.</p>'}
+  </div>`;
+}
+
 function renderScripts(): string {
   const p = state.project!;
   const allRows = buildScriptPackRows(p.scripts, p.curatedSchemas, p.scriptPacks);
@@ -1263,7 +1339,7 @@ function renderScripts(): string {
 
   const emptyStateHtml = p.scripts.length === 0
     ? `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
-        <p class="muted">Import a local .txt script, or a whole folder of scripts. The scanner reads them as plain text and helps you create curated schemas.</p>
+        <p class="muted">Fetch E-Sh4rk scripts from GitHub below, or import a local .txt script/folder. The scanner reads them as plain text and helps you create curated schemas.</p>
       </div>`
     : '';
 
@@ -1278,34 +1354,16 @@ function renderScripts(): string {
   const cardsHtml = scriptCards || (p.scripts.length > 0 ? '<div class="empty">No scripts match this filter/search.</div>' : '<div class="empty">No scripts imported yet.</div>');
 
   return `<h1>Manage Scripts <span class="pill">developer-only, informational</span></h1>
-    <p class="muted">Import local .txt action scripts to inspect them as plain text. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
+    <p class="muted">The recommended path is to fetch E-Sh4rk scripts from GitHub, review or apply a reviewed schema preset, then run them from Run Script. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
     ${emptyStateHtml}
-    ${managementHtml}
-    ${cardsHtml}
+    ${supportedScriptsHtml(p)}
     <div class="card">
-      <h3>Import a script</h3>
-      <button class="btn" data-action="import-script">Import script (.txt)</button>
-      <input type="file" accept=".txt,text/plain" data-action="script-file" id="script-file-input" style="display:none" aria-label="Import script file" />
-    </div>
-    <div class="card">
-      <h3>Import script folder</h3>
-      ${sourceProfileSelectHtml()}
-      <p class="muted">Set the target for scripts in the next folder you import — leave Unknown/Mixed if you're not sure, or the folder mixes targets. Each script can override this individually later.</p>
-      ${targetSelectsHtml('pendingPackTarget', state.pendingPackTarget, 'pending-pack-target')}
-      <label for="pending-pack-target-notes">Target notes (optional)</label>
-      <input type="text" id="pending-pack-target-notes" data-bind="pendingPackTargetNotes" value="${attr(state.pendingPackTargetNotes)}" placeholder="e.g. source, caveats" />
-      <div class="row" style="margin-top:0.5rem">
-        <button class="btn" data-action="import-script-folder">Import script folder</button>
-      </div>
-      <input type="file" webkitdirectory multiple data-action="script-folder-file" id="script-folder-input" style="display:none" aria-label="Import script folder" />
-    </div>
-    <div class="card">
-      <h3>Fetch E-Sh4rk scripts from GitHub</h3>
+      <h3>Fetch E-Sh4rk scripts from GitHub <span class="pill">recommended</span></h3>
       <p class="muted">
         This performs a network request to GitHub, and only when you click the button below —
         nothing is fetched automatically, on launch, or in the background. Fetched files are
-        imported as plain text, the same as a local folder import; no generator is run by
-        fetching scripts, and fetched scripts are stored locally afterward.
+        imported as plain text; no generator is run by fetching scripts, and fetched scripts are
+        stored locally afterward.
       </p>
       <p class="muted">Source: <code>${escapeHtml(ESHARK_GITHUB_REPO_URL)}</code> (public, read-only) — <code>files_frlg/</code> only.</p>
       <p class="muted">Set the target for the fetched scripts — leave Unknown/Mixed if you're not sure. Each script can override this individually later.</p>
@@ -1313,9 +1371,32 @@ function renderScripts(): string {
       <label for="pending-pack-target-notes-github">Target notes (optional)</label>
       <input type="text" id="pending-pack-target-notes-github" data-bind="pendingPackTargetNotes" value="${attr(state.pendingPackTargetNotes)}" placeholder="e.g. source, caveats" />
       <div class="row" style="margin-top:0.5rem">
-        <button class="btn" data-action="fetch-eshark-github"${state.esharkFetchInProgress ? ' disabled' : ''}>${state.esharkFetchInProgress ? 'Fetching from GitHub…' : 'Fetch E-Sh4rk scripts from GitHub'}</button>
+        <button class="btn primary" data-action="fetch-eshark-github"${state.esharkFetchInProgress ? ' disabled' : ''}>${state.esharkFetchInProgress ? 'Fetching from GitHub…' : 'Fetch E-Sh4rk scripts from GitHub'}</button>
       </div>
-    </div>`;
+    </div>
+    ${managementHtml}
+    ${cardsHtml}
+    <details>
+      <summary class="muted" style="cursor:pointer">Advanced / manual import — for offline use or a pinned local copy</summary>
+      <p class="muted">Fetching from GitHub above is the recommended way to get E-Sh4rk scripts. Use local import only if you're offline, want a specific pinned copy, or are working with scripts that aren't on GitHub.</p>
+      <div class="card">
+        <h3>Import a script</h3>
+        <button class="btn" data-action="import-script">Import script (.txt)</button>
+        <input type="file" accept=".txt,text/plain" data-action="script-file" id="script-file-input" style="display:none" aria-label="Import script file" />
+      </div>
+      <div class="card">
+        <h3>Import script folder</h3>
+        ${sourceProfileSelectHtml()}
+        <p class="muted">Set the target for scripts in the next folder you import — leave Unknown/Mixed if you're not sure, or the folder mixes targets. Each script can override this individually later.</p>
+        ${targetSelectsHtml('pendingPackTarget', state.pendingPackTarget, 'pending-pack-target')}
+        <label for="pending-pack-target-notes">Target notes (optional)</label>
+        <input type="text" id="pending-pack-target-notes" data-bind="pendingPackTargetNotes" value="${attr(state.pendingPackTargetNotes)}" placeholder="e.g. source, caveats" />
+        <div class="row" style="margin-top:0.5rem">
+          <button class="btn" data-action="import-script-folder">Import script folder</button>
+        </div>
+        <input type="file" webkitdirectory multiple data-action="script-folder-file" id="script-folder-input" style="display:none" aria-label="Import script folder" />
+      </div>
+    </details>`;
 }
 
 function stateSelect(item: ChecklistItem): string {
@@ -1801,6 +1882,20 @@ async function handleClick(e: Event): Promise<void> {
       render();
       break;
     }
+    case 'run-supported-script': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      const ab = state.actionBuilder;
+      ab.runTarget = schema.target;
+      ab.curatedSchemaId = schema.id;
+      const resolved = resolveActionDefinition(ab, p);
+      ab.values = resolved ? defaultActionValues(resolved.template) : {};
+      resetGeneratedOutput(ab);
+      state.screen = 'actions';
+      render();
+      break;
+    }
     case 'preview-filled-script': {
       if (!p) break;
       const ab = state.actionBuilder;
@@ -1993,6 +2088,16 @@ async function handleClick(e: Event): Promise<void> {
       commit();
       break;
     }
+    case 'apply-reviewed-preset': {
+      if (!p || !id) break;
+      const presetId = el.dataset.preset;
+      const script = p.scripts.find((s) => s.id === id);
+      const preset = REVIEWED_SCHEMA_PRESETS.find((pr) => pr.id === presetId);
+      if (!script || !preset) break;
+      upsertCuratedSchema(p.curatedSchemas, buildCuratedSchemaFromPreset(preset, script));
+      commit();
+      break;
+    }
     case 'export-draft-schema': {
       if (!p || !id) break;
       const script = p.scripts.find((s) => s.id === id);
@@ -2000,6 +2105,29 @@ async function handleClick(e: Event): Promise<void> {
       const schema = buildDraftActionSchema(script, script.lastScan, nowIso);
       const base = script.filename.replace(/\.txt$/i, '') || 'script';
       downloadText(`${base}-draft-schema.json`, exportDraftActionSchemaJson(schema), 'application/json');
+      break;
+    }
+    case 'export-reviewed-preset': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      const script = schema.scriptId ? p.scripts.find((s) => s.id === schema.scriptId) : undefined;
+      const scriptFilename = schema.scriptFilename ?? script?.filename;
+      if (!scriptFilename) {
+        window.alert('This schema has no linked script filename to match against — attach it to a script first.');
+        break;
+      }
+      const reviewerNote = window.prompt('Optional reviewer note (leave blank to skip):', '') ?? undefined;
+      const preset = buildReviewedPresetExport({
+        schema,
+        scriptFilename,
+        scriptTitle: script?.lastScan?.title,
+        category: script?.category,
+        reviewerNote: reviewerNote && reviewerNote.trim() ? reviewerNote.trim() : undefined,
+        reviewedAt: nowIso(),
+      });
+      const base = preset.id || 'reviewed-preset';
+      downloadText(`${base}.json`, serializeReviewedPresetForExport(preset), 'application/json');
       break;
     }
     case 'attach-curated-schema':

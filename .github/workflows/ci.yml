@@ -1,9 +1,11 @@
 # Continuous integration for the FireRed BoxName Workbench.
 #
 # This workflow needs NO secrets, tokens, or credentials. The only network
-# access is npm's normal dependency download during `npm ci`; every other step
-# runs offline against the local checkout. `npm run audit:network` additionally
-# fails the build if any network primitive appears in src/.
+# access is npm's normal dependency download during `npm ci`; every other
+# step runs offline against the local checkout (the test suite mocks the
+# app's one explicit GitHub-fetch action — it never makes a live request).
+# `npm run audit:network` fails the build on any network primitive outside
+# the single allowlisted fetch module, or on an unapproved host inside it.
 name: CI
 
 on:
@@ -38,7 +40,7 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: No-network audit
+      - name: Network audit
         run: npm run audit:network
 
       - name: Build

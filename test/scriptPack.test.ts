@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { CuratedActionSchema, ScriptFile } from '../src/core/types.js';
+import type { CuratedActionSchema, ScriptFile, ScriptPack } from '../src/core/types.js';
 import { scanScript } from '../src/core/scriptScanner.js';
 import {
   collectScriptPackFiles,
@@ -9,8 +9,10 @@ import {
   buildScriptPackRows,
   filterScriptRows,
   searchScriptRows,
+  effectiveScriptTarget,
   type CollectedFile,
 } from '../src/core/scriptPack.js';
+import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 
 const ISO = '2026-01-01T00:00:00.000Z';
 
@@ -88,6 +90,8 @@ describe('collectScriptPackFiles', () => {
   it('parses a recognized list.json metadata file, if present', () => {
     const result = collectScriptPackFiles(makeSimulatedFolder());
     expect(result.metadata).toEqual({ note: 'toy manifest' });
+    expect(result.hasMetadataFile).toBe(true);
+    expect(result.metadataParseError).toBe(false);
   });
 
   it('ignores non-script, non-metadata files, counting them but not collecting them', () => {
@@ -95,10 +99,21 @@ describe('collectScriptPackFiles', () => {
     expect(result.ignoredCount).toBe(1);
   });
 
-  it('does not fail when list.json is malformed — just leaves metadata undefined', () => {
-    const result = collectScriptPackFiles([{ relativePath: 'list.json', text: 'not valid json {' }]);
+  it('does not fail when list.json is malformed — just leaves metadata undefined and flags the parse error non-fatally', () => {
+    const result = collectScriptPackFiles([
+      { relativePath: 'list.json', text: 'not valid json {' },
+      { relativePath: 'still-imports.txt', text: 'x = 1\n@@\nbody' },
+    ]);
     expect(result.metadata).toBeUndefined();
-    expect(result.scripts).toEqual([]);
+    expect(result.hasMetadataFile).toBe(true);
+    expect(result.metadataParseError).toBe(true);
+    expect(result.scripts).toHaveLength(1);
+  });
+
+  it('reports no metadata file at all when none is present', () => {
+    const result = collectScriptPackFiles([{ relativePath: 'flat-script.txt', text: 'x = 1\n@@\nbody' }]);
+    expect(result.hasMetadataFile).toBe(false);
+    expect(result.metadataParseError).toBe(false);
   });
 });
 
@@ -147,7 +162,7 @@ describe('summarizeBatchScan', () => {
 
 function makeSchema(over: Partial<CuratedActionSchema> = {}): CuratedActionSchema {
   return {
-    id: 'schema-1', label: 'Toy schema', description: '', supportedRevisionLabels: [], status: 'draft',
+    id: 'schema-1', label: 'Toy schema', description: '', target: UNKNOWN_TARGET, supportedRevisionLabels: [], status: 'draft',
     fields: [], ...over,
   };
 }
@@ -174,6 +189,14 @@ describe('buildScriptPackRows', () => {
     expect(rowB.userFacingCandidateCount).toBe(0);
     expect(rowB.internalCandidateCount).toBe(1);
     expect(rowB.hasSchema).toBe(false);
+  });
+
+  it('carries a script\'s detected E-Sh4rk category into its row, and leaves it undefined otherwise', () => {
+    const withCategory = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', category: 'pkmn' });
+    const withoutCategory = makeScript({ id: 'b', filename: 'b.txt', rawText: 'x = 1\n@@\nbody' });
+    const rows = buildScriptPackRows([withCategory, withoutCategory], []);
+    expect(rows.find((r) => r.scriptId === 'a')?.category).toBe('pkmn');
+    expect(rows.find((r) => r.scriptId === 'b')?.category).toBeUndefined();
   });
 });
 
@@ -208,5 +231,43 @@ describe('filterScriptRows / searchScriptRows', () => {
 
   it('an empty search query returns every row', () => {
     expect(searchScriptRows(rows, '   ')).toHaveLength(2);
+  });
+});
+
+describe('effectiveScriptTarget — pack default target inheritance and script override', () => {
+  const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+  const leafGreen11 = { game: 'LeafGreen', language: 'Japanese', revision: '1.1' } as const;
+
+  function makePack(over: Partial<ScriptPack> = {}): ScriptPack {
+    return { id: 'pack-1', name: 'Toy pack', importedAt: ISO, defaultTarget: fireRed10, scriptIds: [], ...over };
+  }
+
+  it('inherits the pack default target when the script has no override', () => {
+    const pack = makePack();
+    const script = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', packId: pack.id });
+    expect(effectiveScriptTarget(script, pack)).toEqual(fireRed10);
+  });
+
+  it('uses the script\'s own target override instead of the pack default when set', () => {
+    const pack = makePack();
+    const script = makeScript({
+      id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', packId: pack.id, targetOverride: leafGreen11,
+    });
+    expect(effectiveScriptTarget(script, pack)).toEqual(leafGreen11);
+  });
+
+  it('falls back to Unknown/Mixed when the script belongs to no pack and has no override', () => {
+    const script = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody' });
+    expect(effectiveScriptTarget(script, undefined)).toEqual(UNKNOWN_TARGET);
+  });
+
+  it('never mutates the script or pack it reads from', () => {
+    const pack = makePack();
+    const script = makeScript({ id: 'a', filename: 'a.txt', rawText: 'x = 1\n@@\nbody', packId: pack.id });
+    const scriptBefore = JSON.stringify(script);
+    const packBefore = JSON.stringify(pack);
+    effectiveScriptTarget(script, pack);
+    expect(JSON.stringify(script)).toBe(scriptBefore);
+    expect(JSON.stringify(pack)).toBe(packBefore);
   });
 });

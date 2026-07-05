@@ -1,4 +1,5 @@
-// Local-only persistence. Uses IndexedDB in the browser. No network, ever.
+// Local-only persistence. Uses IndexedDB in the browser. No network I/O in
+// this file — the app's one network operation lives in ./esharkRemote.ts.
 
 import type {
   Project,
@@ -22,8 +23,11 @@ import type {
   CuratedActionSchema,
   CuratedSchemaField,
   ActionFieldOption,
+  GameTarget,
 } from '../core/types.js';
 import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/sources.js';
+import { TARGET_GAMES, TARGET_LANGUAGES, TARGET_REVISIONS, UNKNOWN_TARGET } from '../core/gameTarget.js';
+import { ESHARK_CATEGORIES, ESHARK_SOURCE_PROFILES } from '../core/esharkSource.js';
 
 const DB_NAME = 'firered-research-notebook';
 const STORE = 'projects';
@@ -69,9 +73,16 @@ export async function putProject(project: Project): Promise<void> {
   await tx('readwrite', (store) => store.put(project));
 }
 
+/**
+ * IndexedDB stores whatever shape was last written — including by an older
+ * version of this app, before fields like scriptPacks/target/actionKey
+ * existed. Route every read through the same deep-parse/default logic as
+ * a JSON import so old local data migrates cleanly instead of crashing
+ * the render on a missing field.
+ */
 export async function getProject(id: string): Promise<Project | undefined> {
   const result = await tx<Project | undefined>('readonly', (store) => store.get(id));
-  return result ?? undefined;
+  return result ? parseProject(result) : undefined;
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -79,16 +90,26 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
-  const all = await tx<Project[]>('readonly', (store) => store.getAll());
-  return all
-    .map((p) => ({
+  const all = await tx<unknown[]>('readonly', (store) => store.getAll());
+  const summaries: ProjectSummary[] = [];
+  for (const raw of all) {
+    let p: Project;
+    try {
+      p = parseProject(raw);
+    } catch {
+      // Skip a single corrupted/unparseable stored record rather than
+      // failing the whole recent-workspaces list.
+      continue;
+    }
+    summaries.push({
       id: p.id,
       title: p.metadata.projectTitle || '(untitled)',
       revisionLabel: p.metadata.revisionLabel,
       status: p.projectStatus,
       updatedAt: p.metadata.updatedAt,
-    }))
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    });
+  }
+  return summaries.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
 }
 
 // --- JSON export / import (local files only) --------------------------------
@@ -168,6 +189,9 @@ function asOptNumber(v: unknown, path: string): number | undefined {
 function asBoolean(v: unknown, path: string): boolean {
   if (typeof v !== 'boolean') fail(`${path} must be a boolean.`);
   return v;
+}
+function asOptBoolean(v: unknown, path: string): boolean | undefined {
+  return v === undefined ? undefined : asBoolean(v, path);
 }
 function asArray(v: unknown, path: string): unknown[] {
   if (!Array.isArray(v)) fail(`${path} must be an array.`);
@@ -426,6 +450,14 @@ function parseScriptFile(v: unknown, i: number): ScriptFile {
   if (relativePath !== undefined) script.relativePath = relativePath;
   const packId = asOptString(o.packId, `${path}.packId`);
   if (packId !== undefined) script.packId = packId;
+  if (o.targetOverride !== undefined && o.targetOverride !== null) {
+    script.targetOverride = parseGameTarget(o.targetOverride, `${path}.targetOverride`);
+  }
+  if (o.category !== undefined && o.category !== null) {
+    script.category = asEnum(o.category, ESHARK_CATEGORIES, `${path}.category`);
+  }
+  const displayName = asOptString(o.displayName, `${path}.displayName`);
+  if (displayName !== undefined) script.displayName = displayName;
   return script;
 }
 
@@ -436,10 +468,31 @@ function parseScriptPack(v: unknown, i: number): ScriptPack {
     id: asString(o.id, `${path}.id`),
     name: asString(o.name, `${path}.name`),
     importedAt: asString(o.importedAt, `${path}.importedAt`),
+    defaultTarget: parseGameTargetOrDefault(o.defaultTarget, `${path}.defaultTarget`),
     scriptIds: asStringArray(o.scriptIds, `${path}.scriptIds`),
   };
   const sourceFolderName = asOptString(o.sourceFolderName, `${path}.sourceFolderName`);
   if (sourceFolderName !== undefined) pack.sourceFolderName = sourceFolderName;
+  const targetNotes = asOptString(o.targetNotes, `${path}.targetNotes`);
+  if (targetNotes !== undefined) pack.targetNotes = targetNotes;
+  if (o.sourceProfile !== undefined && o.sourceProfile !== null) {
+    pack.sourceProfile = asEnum(o.sourceProfile, ESHARK_SOURCE_PROFILES, `${path}.sourceProfile`);
+  }
+  const detectedRootPath = asOptString(o.detectedRootPath, `${path}.detectedRootPath`);
+  if (detectedRootPath !== undefined) pack.detectedRootPath = detectedRootPath;
+  const hasListJson = asOptBoolean(o.hasListJson, `${path}.hasListJson`);
+  if (hasListJson !== undefined) pack.hasListJson = hasListJson;
+  if (o.categoriesDetected !== undefined) {
+    pack.categoriesDetected = asArray(o.categoriesDetected, `${path}.categoriesDetected`).map(
+      (c, ci) => asEnum(c, ESHARK_CATEGORIES, `${path}.categoriesDetected[${ci}]`),
+    );
+  }
+  const fetchedAt = asOptString(o.fetchedAt, `${path}.fetchedAt`);
+  if (fetchedAt !== undefined) pack.fetchedAt = fetchedAt;
+  const sourceUrl = asOptString(o.sourceUrl, `${path}.sourceUrl`);
+  if (sourceUrl !== undefined) pack.sourceUrl = sourceUrl;
+  const sourceRef = asOptString(o.sourceRef, `${path}.sourceRef`);
+  if (sourceRef !== undefined) pack.sourceRef = sourceRef;
   return pack;
 }
 
@@ -487,16 +540,38 @@ function parseCuratedSchemaField(v: unknown, path: string): CuratedSchemaField {
   return field;
 }
 
+function parseGameTarget(v: unknown, path: string): GameTarget {
+  const o = asObject(v, path);
+  const target: GameTarget = {
+    game: asEnum(o.game, TARGET_GAMES, `${path}.game`),
+    language: asEnum(o.language, TARGET_LANGUAGES, `${path}.language`),
+    revision: asEnum(o.revision, TARGET_REVISIONS, `${path}.revision`),
+  };
+  const regionLabel = asOptString(o.regionLabel, `${path}.regionLabel`);
+  if (regionLabel !== undefined) target.regionLabel = regionLabel;
+  const notes = asOptString(o.notes, `${path}.notes`);
+  if (notes !== undefined) target.notes = notes;
+  return target;
+}
+
+/** Older exports predate the target model — default to Unknown/Mixed rather than guessing. */
+function parseGameTargetOrDefault(v: unknown, path: string): GameTarget {
+  return v === undefined || v === null ? { ...UNKNOWN_TARGET } : parseGameTarget(v, path);
+}
+
 function parseCuratedActionSchema(v: unknown, path: string): CuratedActionSchema {
   const o = asObject(v, path);
   const schema: CuratedActionSchema = {
     id: asString(o.id, `${path}.id`),
     label: asString(o.label, `${path}.label`),
     description: asString(o.description, `${path}.description`),
+    target: parseGameTargetOrDefault(o.target, `${path}.target`),
     supportedRevisionLabels: asStringArray(o.supportedRevisionLabels, `${path}.supportedRevisionLabels`),
     fields: asArray(o.fields, `${path}.fields`).map((f, i) => parseCuratedSchemaField(f, `${path}.fields[${i}]`)),
     status: asEnum(o.status, CURATED_SCHEMA_STATUSES, `${path}.status`),
   };
+  const actionKey = asOptString(o.actionKey, `${path}.actionKey`);
+  if (actionKey !== undefined) schema.actionKey = actionKey;
   const scriptId = asOptString(o.scriptId, `${path}.scriptId`);
   if (scriptId !== undefined) schema.scriptId = scriptId;
   const scriptFilename = asOptString(o.scriptFilename, `${path}.scriptFilename`);
@@ -525,7 +600,7 @@ export function importCuratedActionSchemaJson(text: string): CuratedActionSchema
   return parseCuratedActionSchema(parsed, 'root');
 }
 
-function parseProject(v: unknown): Project {
+export function parseProject(v: unknown): Project {
   const o = asObject(v, 'root');
   if (o.schemaVersion !== 1) fail('schemaVersion must be 1.');
   return {

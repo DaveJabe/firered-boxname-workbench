@@ -8,7 +8,8 @@
 // it as JSON for informational display; its content is never executed or
 // fed back into scanning/filling.
 
-import type { CuratedActionSchema, ScriptFile, VariableCandidate } from './types.js';
+import type { CuratedActionSchema, EsharkCategory, GameTarget, ScriptFile, ScriptPack, VariableCandidate } from './types.js';
+import { UNKNOWN_TARGET } from './gameTarget.js';
 
 // --- Collecting a folder selection into scripts + optional metadata --------
 
@@ -23,13 +24,17 @@ export interface CollectedScript {
   relativePath: string;
   rawText: string;
   /** A recognized common FireRed script-pack subfolder, if the relative path matches one. */
-  category?: string;
+  category?: EsharkCategory;
 }
 
 export interface ScriptPackCollectionResult {
   scripts: CollectedScript[];
   /** Parsed content of a recognized metadata file (e.g. list.json), if present and valid JSON. */
   metadata: unknown;
+  /** True if a recognized metadata file (e.g. list.json) was found, whether or not it parsed. */
+  hasMetadataFile: boolean;
+  /** True if a recognized metadata file was found but failed to parse as JSON. */
+  metadataParseError: boolean;
   /** Count of files that were neither a .txt script nor a recognized metadata file. */
   ignoredCount: number;
 }
@@ -37,7 +42,7 @@ export interface ScriptPackCollectionResult {
 const RECOGNIZED_METADATA_FILENAMES = ['list.json'];
 
 /** Common FireRed/LeafGreen script-pack subfolders, recognized but never required. */
-const COMMON_CATEGORY_PATTERNS: ReadonlyArray<{ pattern: RegExp; category: string }> = [
+const COMMON_CATEGORY_PATTERNS: ReadonlyArray<{ pattern: RegExp; category: EsharkCategory }> = [
   { pattern: /(^|\/)files_frlg\/misc\//i, category: 'misc' },
   { pattern: /(^|\/)files_frlg\/pkmn\//i, category: 'pkmn' },
   { pattern: /(^|\/)files_frlg\/rng\//i, category: 'rng' },
@@ -52,7 +57,7 @@ function baseName(relativePath: string): string {
   return parts[parts.length - 1];
 }
 
-function detectCategory(relativePath: string): string | undefined {
+function detectCategory(relativePath: string): EsharkCategory | undefined {
   const normalized = normalizePath(relativePath);
   return COMMON_CATEGORY_PATTERNS.find((p) => p.pattern.test(normalized))?.category;
 }
@@ -72,6 +77,8 @@ export function isRelevantPackFile(relativePath: string): boolean {
 export function collectScriptPackFiles(files: readonly CollectedFile[]): ScriptPackCollectionResult {
   const scripts: CollectedScript[] = [];
   let metadata: unknown;
+  let hasMetadataFile = false;
+  let metadataParseError = false;
   let ignoredCount = 0;
 
   for (const file of files) {
@@ -88,23 +95,34 @@ export function collectScriptPackFiles(files: readonly CollectedFile[]): ScriptP
       continue;
     }
     if (RECOGNIZED_METADATA_FILENAMES.includes(name.toLowerCase())) {
+      hasMetadataFile = true;
       try {
         metadata = JSON.parse(file.text);
       } catch {
         // Malformed or unparsable metadata is fine — it's optional and informational only.
+        metadataParseError = true;
       }
       continue;
     }
     ignoredCount++;
   }
 
-  return { scripts, metadata, ignoredCount };
+  return { scripts, metadata, hasMetadataFile, metadataParseError, ignoredCount };
 }
 
 /** The top-level folder name the user selected, derived from the first nested relative path. */
 export function detectSourceFolderName(files: readonly CollectedFile[]): string | undefined {
   const nested = files.find((f) => normalizePath(f.relativePath).includes('/'));
   return nested ? normalizePath(nested.relativePath).split('/')[0] : undefined;
+}
+
+/**
+ * The target that actually applies to a script: its own override if set,
+ * else its pack's default target, else Unknown/Mixed (no pack, no override).
+ * Never guesses a real value — only ever what was explicitly recorded.
+ */
+export function effectiveScriptTarget(script: ScriptFile, pack: ScriptPack | undefined): GameTarget {
+  return script.targetOverride ?? pack?.defaultTarget ?? UNKNOWN_TARGET;
 }
 
 // --- Batch scan summary ------------------------------------------------------
@@ -146,13 +164,17 @@ export interface ScriptPackRow {
   userFacingCandidateCount: number;
   internalCandidateCount: number;
   hasSchema: boolean;
+  target: GameTarget;
+  category?: EsharkCategory;
 }
 
 /** One summary row per script, for the Manage Scripts table — never scans or fills anything itself. */
 export function buildScriptPackRows(
   scripts: readonly ScriptFile[],
   curatedSchemas: readonly CuratedActionSchema[],
+  packs: readonly ScriptPack[] = [],
 ): ScriptPackRow[] {
+  const packsById = new Map(packs.map((p) => [p.id, p]));
   return scripts.map((s) => {
     const candidates = candidatesOf(s);
     const row: ScriptPackRow = {
@@ -162,9 +184,11 @@ export function buildScriptPackRows(
       userFacingCandidateCount: candidates.filter((c) => !c.internal).length,
       internalCandidateCount: candidates.filter((c) => c.internal).length,
       hasSchema: curatedSchemas.some((cs) => cs.scriptId === s.id),
+      target: effectiveScriptTarget(s, s.packId ? packsById.get(s.packId) : undefined),
     };
     if (s.relativePath) row.relativePath = s.relativePath;
     if (s.lastScan?.title) row.title = s.lastScan.title;
+    if (s.category) row.category = s.category;
     return row;
   });
 }

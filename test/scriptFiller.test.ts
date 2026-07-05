@@ -3,6 +3,7 @@ import type { CuratedActionSchema, ScriptFile } from '../src/core/types.js';
 import { fillScriptFromSchema } from '../src/core/scriptFiller.js';
 import { scanScript } from '../src/core/scriptScanner.js';
 import { candidateToDraftField, defaultIncludedCandidateNames } from '../src/core/schemaBuilder.js';
+import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 
 // A harmless, invented toy fixture — no real script, item ID, address,
 // offset, route step, opcode, or payload byte. Irregular spacing and a
@@ -22,6 +23,7 @@ function makeSchema(over: Partial<CuratedActionSchema> = {}): CuratedActionSchem
     id: 'toy-schema',
     label: 'Toy schema',
     description: 'toy',
+    target: UNKNOWN_TARGET,
     supportedRevisionLabels: [],
     status: 'reviewed',
     fields: [
@@ -170,6 +172,7 @@ function schemaFromDefaultCandidates(script: ScriptFile): CuratedActionSchema {
     id: 'toy-move-schema',
     label: 'Toy move schema',
     description: 'Built from only the default-included (user-facing) candidates.',
+    target: UNKNOWN_TARGET,
     scriptId: script.id,
     scriptFilename: script.filename,
     supportedRevisionLabels: [],

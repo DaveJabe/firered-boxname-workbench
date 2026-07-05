@@ -7,6 +7,7 @@ import {
   exportProjectJson,
   exportDraftActionSchemaJson,
 } from '../src/data/storage.js';
+import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 
 const ISO = '2026-01-01T00:00:00.000Z';
 
@@ -186,7 +187,7 @@ describe('script pack (batch folder import) round-tripping', () => {
       () => ISO,
     );
     project.scripts.push(makeScript(TOY_SCRIPT, { id: 'sc1', relativePath: 'ToyPack/misc/toy.txt', packId: 'pack1' }));
-    project.scriptPacks.push({ id: 'pack1', name: 'ToyPack', importedAt: ISO, sourceFolderName: 'ToyPack', scriptIds: ['sc1'] });
+    project.scriptPacks.push({ id: 'pack1', name: 'ToyPack', importedAt: ISO, defaultTarget: UNKNOWN_TARGET, sourceFolderName: 'ToyPack', scriptIds: ['sc1'] });
 
     const roundTripped = importProjectJson(exportProjectJson(project));
     expect(roundTripped.scriptPacks).toHaveLength(1);

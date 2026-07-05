@@ -353,6 +353,38 @@ export interface DraftActionSchema {
   isDraft: true;
 }
 
+// --- Game-target compatibility model -----------------------------------------
+//
+// A GameTarget records which game/language/revision a script or curated
+// schema was written for — informational/filtering metadata only. Nothing
+// here invokes a generator, reads a ROM/save, or verifies compatibility
+// against real game data; "compatible" only ever means "the recorded
+// metadata matches." See core/gameTarget.ts for the enum lists and pure
+// label/match/compatibility/sort helpers. "Unknown" is a first-class, valid
+// value everywhere — existing scripts/schemas/packs that predate this model
+// migrate to it, never silently to a guessed real value.
+
+export type TargetGame = 'FireRed' | 'LeafGreen' | 'Unknown';
+export type TargetLanguage =
+  | 'English'
+  | 'Japanese'
+  | 'Spanish'
+  | 'French'
+  | 'German'
+  | 'Italian'
+  | 'Korean'
+  | 'Unknown';
+export type TargetRevision = '1.0' | '1.1' | 'Unknown';
+
+export interface GameTarget {
+  game: TargetGame;
+  language: TargetLanguage;
+  revision: TargetRevision;
+  /** Optional free-text region label (documentation only, e.g. "PAL"). */
+  regionLabel?: string;
+  notes?: string;
+}
+
 /** A locally-imported `.txt` action script, kept for inspection only. */
 export interface ScriptFile {
   id: string;
@@ -367,7 +399,22 @@ export interface ScriptFile {
   relativePath?: string;
   /** Id of the ScriptPack this script was imported as part of, if any. */
   packId?: string;
+  /** Overrides the owning pack's defaultTarget for this specific script, if set. See GameTarget below. */
+  targetOverride?: GameTarget;
+  /** Detected E-Sh4rk files_frlg subfolder (misc/pkmn/rng), if imported via an E-Sh4rk source profile. */
+  category?: EsharkCategory;
+  /** Display name read from the pack's list.json, if present and recognized — informational only. */
+  displayName?: string;
 }
+
+/** Recognized E-Sh4rk `files_frlg` subfolder a script was imported from. */
+export type EsharkCategory = 'misc' | 'pkmn' | 'rng';
+
+/**
+ * Which E-Sh4rk folder layout (or the explicit GitHub fetch) a script pack
+ * was sourced from. See core/esharkSource.ts and data/esharkRemote.ts.
+ */
+export type EsharkSourceProfile = 'eshark-files-frlg' | 'eshark-offline-app' | 'eshark-github';
 
 // --- Script packs (batch "import script folder") ----------------------------
 //
@@ -381,8 +428,25 @@ export interface ScriptPack {
   name: string;
   importedAt: string;
   sourceFolderName?: string;
+  /** Default target for scripts in this pack, unless a script sets its own targetOverride. See GameTarget below. */
+  defaultTarget: GameTarget;
+  targetNotes?: string;
   /** Ids into Project.scripts for the scripts imported as part of this pack. */
   scriptIds: readonly string[];
+  /** Set when this pack was imported via an E-Sh4rk source profile rather than a generic folder. */
+  sourceProfile?: EsharkSourceProfile;
+  /** Relative path (never absolute) to the detected files_frlg folder within the user's selection. */
+  detectedRootPath?: string;
+  /** Whether a list.json manifest was found alongside the scripts (whether or not it parsed). */
+  hasListJson?: boolean;
+  /** Which files_frlg subfolders (misc/pkmn/rng) were detected among the imported scripts. */
+  categoriesDetected?: readonly EsharkCategory[];
+  /** When this pack was fetched over the network, for sourceProfile 'eshark-github' only. */
+  fetchedAt?: string;
+  /** The repository URL scripts were fetched from, for sourceProfile 'eshark-github' only. */
+  sourceUrl?: string;
+  /** The branch/tag/commit ref that was fetched, if known. */
+  sourceRef?: string;
 }
 
 // --- Curated action schemas (mock mode only) --------------------------------
@@ -429,9 +493,13 @@ export interface CuratedActionSchema {
   id: string;
   label: string;
   description: string;
+  /** Stable action concept shared across target-specific variants (e.g. "teach-any-move"). Distinct from `id`, which stays unique per variant. */
+  actionKey?: string;
+  /** Which game/language/revision this specific schema variant targets. Unknown/Mixed until the user sets it. */
+  target: GameTarget;
   scriptId?: string;
   scriptFilename?: string;
-  /** Empty = supports any revision. */
+  /** Empty = supports any revision. Free-text label matching, distinct from and predates the structured `target` field above. */
   supportedRevisionLabels: readonly string[];
   fields: readonly CuratedSchemaField[];
   status: CuratedSchemaStatus;

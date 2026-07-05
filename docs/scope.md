@@ -31,8 +31,13 @@ import a script, and a workspace is created for you in the background.
 - **Not exploit research.** It works only with techniques you already have —
   from a template, a curated schema, or text you import — and never derives
   new ones.
-- **Not networked.** No request ever leaves the machine; see the README's
-  "Offline by construction" section for how that is enforced.
+- **No hidden network calls.** No request leaves the machine except the one
+  explicit, user-triggered "Fetch E-Sh4rk scripts from GitHub" action — it
+  never runs automatically (not on launch, not on a timer), only contacts
+  the public GitHub API/raw-content hosts for the `files_frlg` script
+  folder, and imports what it fetches as plain text; no generator is run by
+  fetching scripts. See the README's "Local by construction" section for
+  how that boundary is enforced.
 - **Not a background process.** Every action is the direct result of
   something you clicked or typed. Nothing runs on a timer or invisibly.
 - **Not a ROM/save-file/emulator tool**, unless that is explicitly added in a
@@ -57,7 +62,10 @@ exported or printed without being reviewable first.
   script/generator from within this app (subprocess execution, Tauri, or any
   other direct integration) — is out of scope. This document describes the
   boundary that would apply if it were ever proposed; it does not describe
-  an existing or planned feature.
+  an existing or planned feature. See
+  [docs/generator-adapter-contract.md](./generator-adapter-contract.md) for
+  the (unimplemented) type-only shape a future adapter would need to fit
+  the existing schema-filling/output-parsing pipeline.
 - **ROM/save-file/emulator handling**, if ever added, needs its own branch and
   its own update to this document.
 

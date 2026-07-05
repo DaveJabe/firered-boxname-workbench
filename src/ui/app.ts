@@ -16,6 +16,9 @@ import type {
   CuratedSchemaStatus,
   FilledScriptResult,
   ParsedGeneratorOutput,
+  GameTarget,
+  EsharkCategory,
+  EsharkSourceProfile,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -28,7 +31,14 @@ import { TEMPLATES } from '../templates/checklist-templates.js';
 import type { ActionField, ActionTemplate } from '../templates/action-templates.js';
 import { defaultActionValues, coerceActionFieldValue } from '../core/actionInput.js';
 import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
-import { toActionTemplateShape, isSchemaSelectable, resolveCuratedSchema, supportsRevision, upsertCuratedSchema } from '../core/curatedSchemas.js';
+import {
+  toActionTemplateShape,
+  isSchemaSelectable,
+  supportsRevision,
+  upsertCuratedSchema,
+  defaultRunnableSchemas,
+  advancedRunnableSchemas,
+} from '../core/curatedSchemas.js';
 import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../core/schemaBuilder.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
 import { parseGeneratorOutput, formatCompactBoxNames, formatRawBoxLines } from '../core/generatorOutputParser.js';
@@ -40,12 +50,42 @@ import {
   buildScriptPackRows,
   filterScriptRows,
   searchScriptRows,
+  effectiveScriptTarget,
   type CollectedFile,
   type ScriptPackRow,
   type ScriptLibraryFilter,
 } from '../core/scriptPack.js';
 import { findMatchingPreset, applyPreset } from '../core/schemaPresets.js';
 import { SCHEMA_PRESETS } from '../templates/schema-presets.js';
+import { summarizeSupportedScripts } from '../core/supportedScripts.js';
+import {
+  matchReviewedPresets,
+  buildCuratedSchemaFromPreset,
+  buildReviewedPresetExport,
+  serializeReviewedPresetForExport,
+} from '../core/reviewedSchemaPresets.js';
+import { REVIEWED_SCHEMA_PRESETS } from '../templates/reviewed-schema-presets.js';
+import {
+  TARGET_GAMES,
+  TARGET_LANGUAGES,
+  TARGET_REVISIONS,
+  UNKNOWN_TARGET,
+  targetLabel,
+  checkTargetCompatibility,
+  isUnknownTarget,
+} from '../core/gameTarget.js';
+import {
+  SOURCE_PROFILE_INFO,
+  ESHARK_SETUP_NOTE,
+  LOCAL_ESHARK_SOURCE_PROFILES,
+  selectEsharkFiles,
+  displayRootPath,
+  parseEsharkListEntries,
+  lookupEsharkListEntry,
+  esharkSourceProfileLabel,
+  type SourceProfile,
+} from '../core/esharkSource.js';
+import { fetchEsharkFilesFrlg, ESHARK_GITHUB_REPO_URL, EsharkFetchError } from '../data/esharkRemote.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -80,6 +120,8 @@ interface PasteBackState {
 interface ActionBuilderState {
   revisionLabel: string;
   curatedSchemaId: string;
+  /** The game/language/revision to run against. Starts Unknown/Mixed — nothing defaults to "exact" against Unknown. */
+  runTarget: GameTarget;
   values: Record<string, ActionFieldValue>;
   /** Result of the last "Preview filled script" click, if any. Never invokes a generator. */
   filledScript: FilledScriptResult | null;
@@ -97,6 +139,7 @@ function makeEmptyActionBuilderState(): ActionBuilderState {
   return {
     revisionLabel: '',
     curatedSchemaId: '',
+    runTarget: UNKNOWN_TARGET,
     values: {},
     filledScript: null,
     filledScriptSavedBlockId: null,
@@ -104,13 +147,14 @@ function makeEmptyActionBuilderState(): ActionBuilderState {
   };
 }
 
-/** Seed Run Script state for a workspace: pre-select its first selectable curated schema, if any. */
+/** Seed Run Script state for a workspace. Target starts Unknown/Mixed, so no schema is
+ *  pre-selected yet — the user picks a target first, never a silent guess. */
 function makeActionBuilderState(project: Project): ActionBuilderState {
-  const schema = resolveCuratedSchema(project.curatedSchemas, '');
   return {
     revisionLabel: project.metadata.revisionLabel,
-    curatedSchemaId: schema?.id ?? '',
-    values: schema ? defaultActionValues(toActionTemplateShape(schema)) : {},
+    curatedSchemaId: '',
+    runTarget: UNKNOWN_TARGET,
+    values: {},
     filledScript: null,
     filledScriptSavedBlockId: null,
     pasteBack: makePasteBackState(),
@@ -130,6 +174,10 @@ interface SchemaEditorState {
   label: string;
   description: string;
   status: CuratedSchemaStatus;
+  /** Stable action concept (e.g. "teach-any-move"), shared across target-specific schema variants. */
+  actionKey: string;
+  /** Which game/language/revision this schema variant targets. Seeded from the linked script's effective target. */
+  target: GameTarget;
   /** Comma-separated for a single text input; parsed into an array on save. */
   supportedRevisionLabels: string;
   /** Candidate names (== initial variableName) currently included as fields. */
@@ -140,7 +188,7 @@ interface SchemaEditorState {
   savedSchemaId: string | null;
 }
 
-function openSchemaEditor(script: ScriptFile): void {
+function openSchemaEditor(script: ScriptFile, project: Project): void {
   const candidates = script.lastScan?.candidates ?? [];
   const included = new Set(defaultIncludedCandidateNames(candidates));
   const fields = new Map<string, CuratedSchemaField>();
@@ -148,12 +196,15 @@ function openSchemaEditor(script: ScriptFile): void {
     const candidate = candidates.find((c) => c.name === name);
     if (candidate) fields.set(name, candidateToDraftField(candidate));
   }
+  const pack = script.packId ? project.scriptPacks.find((pk) => pk.id === script.packId) : undefined;
   state.schemaEditor = {
     scriptId: script.id,
     id: script.filename.replace(/\.[^./]+$/, ''),
     label: '',
     description: '',
     status: 'draft',
+    actionKey: '',
+    target: effectiveScriptTarget(script, pack),
     supportedRevisionLabels: '',
     included,
     fields,
@@ -187,12 +238,15 @@ function buildDraftSchemaFromEditor(editor: SchemaEditorState, script: ScriptFil
     id: editor.id.trim(),
     label: editor.label.trim(),
     description: editor.description.trim(),
+    target: editor.target,
     scriptId: script.id,
     scriptFilename: script.filename,
     supportedRevisionLabels: editor.supportedRevisionLabels.split(',').map((s) => s.trim()).filter(Boolean),
     fields,
     status: editor.status,
   };
+  const actionKey = editor.actionKey.trim();
+  if (actionKey) schema.actionKey = actionKey;
   return schema;
 }
 
@@ -204,7 +258,13 @@ function applySchemaEditorBinding(bind: string, value: string): void {
     case 'schema.label': editor.label = value; break;
     case 'schema.description': editor.description = value; break;
     case 'schema.status': editor.status = value as CuratedSchemaStatus; break;
+    case 'schema.actionKey': editor.actionKey = value; break;
     case 'schema.supportedRevisionLabels': editor.supportedRevisionLabels = value; break;
+    case 'schema.target.game': editor.target = { ...editor.target, game: value as GameTarget['game'] }; break;
+    case 'schema.target.language': editor.target = { ...editor.target, language: value as GameTarget['language'] }; break;
+    case 'schema.target.revision': editor.target = { ...editor.target, revision: value as GameTarget['revision'] }; break;
+    case 'schema.target.regionLabel': editor.target = { ...editor.target, regionLabel: value || undefined }; break;
+    case 'schema.target.notes': editor.target = { ...editor.target, notes: value || undefined }; break;
   }
 }
 
@@ -247,12 +307,27 @@ function applySchemaFieldBinding(bind: string, candidateKey: string | undefined,
 /** Resolve Run Script's currently-selected curated schema to the common
  *  ActionTemplate shape the field renderer expects. Null only when no
  *  selectable curated schema exists at all — callers must not fill/generate then. */
+/**
+ * Resolve Run Script's currently-selected schema by id exactly — no fallback
+ * to "first selectable." Which id counts as the sensible default for the
+ * current target is decided explicitly by pickDefaultCuratedSchemaId,
+ * called whenever the target or workspace changes; this never guesses.
+ */
 function resolveActionDefinition(
   ab: ActionBuilderState,
   project: Project,
 ): { template: ActionTemplate; curated: CuratedActionSchema } | null {
-  const schema = resolveCuratedSchema(project.curatedSchemas, ab.curatedSchemaId);
+  const schema = project.curatedSchemas.find((s) => s.id === ab.curatedSchemaId && isSchemaSelectable(s));
   return schema ? { template: toActionTemplateShape(schema), curated: schema } : null;
+}
+
+/** The schema id Run Script should default to for this target: the current
+ *  id if it's still a default-runnable match, else the first default match,
+ *  else none (the empty state / advanced disclosure take over). */
+function pickDefaultCuratedSchemaId(schemas: readonly CuratedActionSchema[], runTarget: GameTarget, currentId: string): string {
+  const defaults = defaultRunnableSchemas(schemas, runTarget);
+  if (defaults.some((s) => s.id === currentId)) return currentId;
+  return defaults[0]?.id ?? '';
 }
 
 const state: {
@@ -272,6 +347,13 @@ const state: {
   scriptsFilter: ScriptLibraryFilter;
   /** Manage Scripts: current search text (filename/title). */
   scriptsSearch: string;
+  /** Manage Scripts: target metadata to apply to the next imported script folder. */
+  pendingPackTarget: GameTarget;
+  pendingPackTargetNotes: string;
+  /** Manage Scripts: which folder layout to assume for the next imported script folder. */
+  pendingSourceProfile: SourceProfile;
+  /** Manage Scripts: whether the explicit GitHub fetch is in flight (disables the button, shows progress). */
+  esharkFetchInProgress: boolean;
 } = {
   screen: 'actions',
   summaries: [],
@@ -286,6 +368,10 @@ const state: {
   manageWorkspacesOpen: false,
   scriptsFilter: 'all',
   scriptsSearch: '',
+  pendingPackTarget: UNKNOWN_TARGET,
+  pendingPackTargetNotes: '',
+  pendingSourceProfile: 'generic',
+  esharkFetchInProgress: false,
 };
 
 const uid = () => crypto.randomUUID();
@@ -326,6 +412,36 @@ function opt(value: string, label: string, current: string): string {
   return `<option value="${attr(value)}"${value === current ? ' selected' : ''}>${escapeHtml(label)}</option>`;
 }
 
+/** Game/Language/Revision selects, reused by the schema editor, script-pack import, and Run Script. */
+function targetSelectsHtml(bindPrefix: string, target: GameTarget, idPrefix: string): string {
+  const gameOpts = TARGET_GAMES.map((g) => opt(g, g, target.game)).join('');
+  const langOpts = TARGET_LANGUAGES.map((l) => opt(l, l, target.language)).join('');
+  const revOpts = TARGET_REVISIONS.map((r) => opt(r, r, target.revision)).join('');
+  return `<div class="grid2">
+    <div><label for="${idPrefix}-game">Game</label><select id="${idPrefix}-game" data-bind="${bindPrefix}.game">${gameOpts}</select></div>
+    <div><label for="${idPrefix}-lang">Language</label><select id="${idPrefix}-lang" data-bind="${bindPrefix}.language">${langOpts}</select></div>
+  </div>
+  <label for="${idPrefix}-rev">Revision</label>
+  <select id="${idPrefix}-rev" data-bind="${bindPrefix}.revision">${revOpts}</select>`;
+}
+
+const SOURCE_PROFILE_OPTIONS: readonly SourceProfile[] = ['generic', ...LOCAL_ESHARK_SOURCE_PROFILES];
+
+/** Source-profile selector for folder import, with a plain-language explanation of the selected option. */
+function sourceProfileSelectHtml(): string {
+  const profile = state.pendingSourceProfile;
+  const options = SOURCE_PROFILE_OPTIONS.map(
+    (p) => `<option value="${p}"${p === profile ? ' selected' : ''}>${escapeHtml(SOURCE_PROFILE_INFO[p].label)}</option>`,
+  ).join('');
+  const setupNote = profile !== 'generic'
+    ? `<p class="muted" style="font-style:italic">${escapeHtml(ESHARK_SETUP_NOTE)}</p>`
+    : '';
+  return `<label for="pending-source-profile">Source</label>
+  <select id="pending-source-profile" data-bind="pendingSourceProfile">${options}</select>
+  <p class="muted">${escapeHtml(SOURCE_PROFILE_INFO[profile].description)}</p>
+  ${setupNote}`;
+}
+
 function navRail(): string {
   if (!state.project) return '';
   const activeTab = sidebarActiveScreen(state.screen);
@@ -359,7 +475,7 @@ function topbar(): string {
 
 function layout(content: string): string {
   return `<a href="#main" class="skip">Skip to content</a>
-    <div class="banner">Local &amp; reviewable — no network calls, no hidden execution. Existing local scripts/generators are the source of truth; this app prepares input, reviews output, and keeps provenance.</div>
+    <div class="banner">Local &amp; reviewable — no hidden network calls, no hidden execution. Network access only occurs when you explicitly fetch E-Sh4rk scripts; no generator is run by fetching them. Existing local scripts/generators are the source of truth; this app prepares input, reviews output, and keeps provenance.</div>
     ${topbar()}
     <div class="shell">${navRail()}<main id="main" tabindex="-1">${content}</main></div>`;
 }
@@ -441,7 +557,7 @@ function renderLanding(): string {
 function renderStartHere(): string {
   const p = state.project!;
   return `<h1>Orientation</h1>
-    <p class="muted">A quick orientation for this workspace. Everything here stays local — no network calls, nothing runs in the background.</p>
+    <p class="muted">A quick orientation for this workspace. Everything here stays local by default — no hidden network calls, nothing runs in the background. The one exception is the explicit "Fetch E-Sh4rk scripts from GitHub" button in Manage Scripts, which only ever runs when you click it.</p>
     <div class="grid2">
       <div class="card">
         <h3>Run Script</h3>
@@ -668,6 +784,27 @@ function curatedFieldExtra(field: CuratedSchemaField | undefined): string {
   </details>`;
 }
 
+function advancedSchemaListHtml(schemas: readonly CuratedActionSchema[], runTarget: GameTarget): string {
+  return schemas
+    .map((s) => {
+      const compat = checkTargetCompatibility(s.target, runTarget);
+      const compatBadge = compat === 'unknown' ? 'warning' : 'error';
+      const compatText = compat === 'unknown' ? 'Unknown/Mixed compatibility' : 'Different target';
+      return `<div class="card" style="margin-top:0.4rem">
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <strong>${escapeHtml(s.label)}</strong>
+            <span class="pill status-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
+            <span class="badge ${compatBadge}">${compatText}</span>
+            <span class="muted">${escapeHtml(targetLabel(s.target))}</span>
+          </div>
+          <button class="btn small" data-action="select-advanced-schema" data-id="${attr(s.id)}">Use this schema</button>
+        </div>
+      </div>`;
+    })
+    .join('');
+}
+
 function renderActions(): string {
   const p = state.project!;
   const ab = state.actionBuilder;
@@ -682,13 +819,49 @@ function renderActions(): string {
       </div>`;
   }
 
-  const resolved = resolveActionDefinition(ab, p)!; // non-null: selectable.length > 0 guarantees a match
+  const defaultSchemas = defaultRunnableSchemas(p.curatedSchemas, ab.runTarget);
+  const advancedSchemas = advancedRunnableSchemas(p.curatedSchemas, ab.runTarget);
+  const resolved = resolveActionDefinition(ab, p);
+
+  const targetCard = `<div class="card">
+    <h3>Target</h3>
+    <p class="muted">Only reviewed schemas that exactly match this target appear below by default — no silent fallback to a different target.</p>
+    ${isUnknownTarget(ab.runTarget) ? '<p class="muted">Pick a game, language, and revision to see matching schemas.</p>' : ''}
+    ${targetSelectsHtml('action.runTarget', ab.runTarget, 'run-target')}
+  </div>`;
+
+  const advancedDisclosure = advancedSchemas.length > 0
+    ? `<details style="margin-top:0.5rem">
+        <summary class="muted" style="cursor:pointer">Show ${advancedSchemas.length} other schema(s) (unreviewed or a different target)</summary>
+        ${advancedSchemaListHtml(advancedSchemas, ab.runTarget)}
+      </details>`
+    : '';
+
+  if (!resolved) {
+    return `<h1>Run Script</h1>
+      <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+      ${targetCard}
+      <div class="card" style="border-color:#e0a458;background:#fffaf2">
+        <p class="muted">No reviewed schema is available for this target.</p>
+        ${advancedDisclosure}
+      </div>`;
+  }
+
   const { template, curated } = resolved;
-  const schemaOpts = selectable.map((s) => opt(s.id, s.label, curated.id)).join('');
+  const isDefaultChoice = defaultSchemas.some((s) => s.id === curated.id);
+  const schemaOpts = defaultSchemas.map((s) => opt(s.id, s.label, curated.id)).join('');
   const curatedByKey = new Map(curated.fields.map((f) => [f.key, f]));
   const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
 
-  const curatedStatusLine = `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span>${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`;
+  const curatedStatusLine = `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span> · target: ${escapeHtml(targetLabel(curated.target))}${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`;
+
+  const compatWarning = !isDefaultChoice
+    ? `<p class="badge error" style="display:inline-block;margin-bottom:0.5rem">This schema was chosen explicitly from "other schemas" — its status or target does not exactly match your selected target. Review carefully before relying on it.</p>`
+    : '';
+
+  const schemaSelectorHtml = defaultSchemas.length > 0
+    ? `<label for="ab-curated">Script</label><select id="ab-curated" data-bind="action.curatedSchemaId">${schemaOpts}</select>`
+    : `<p class="muted">Using an explicitly-chosen schema outside the default list for this target (see "other schemas" above).</p>`;
 
   const linkedScript = curated.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
   const filledScriptCard = linkedScript
@@ -703,15 +876,17 @@ function renderActions(): string {
 
   return `<h1>Run Script</h1>
     <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+    ${targetCard}
     <div class="card">
       <label for="ab-revision">Revision label</label>
       <input type="text" id="ab-revision" data-bind="action.revisionLabel" value="${attr(ab.revisionLabel)}" placeholder="e.g. Rev 1 (documentation only)" />
-      <label for="ab-curated">Script</label>
-      <select id="ab-curated" data-bind="action.curatedSchemaId">${schemaOpts}</select>
+      ${schemaSelectorHtml}
       ${curatedStatusLine}
+      ${compatWarning}
       <p class="muted">${escapeHtml(curated.description)}</p>
       ${fieldsHtml}
     </div>
+    ${advancedDisclosure}
     ${filledScriptCard}
     ${pasteBackCard(p, ab, template.label)}`;
 }
@@ -776,12 +951,19 @@ function renderCuratedSchemaCard(schema: CuratedActionSchema, candidates: readon
   const rows = schema.fields.map((f) => curatedSchemaFieldRow(f, candidatesByName)).join('');
   return `<div class="card ext-tool">
     <div class="row" style="justify-content:space-between">
-      <strong>${escapeHtml(schema.label)}</strong>
+      <div class="row">
+        <strong>${escapeHtml(schema.label)}</strong>
+        <span class="pill">${escapeHtml(targetLabel(schema.target))}</span>
+        ${schema.actionKey ? `<span class="muted">action: <code>${escapeHtml(schema.actionKey)}</code></span>` : ''}
+      </div>
       <span class="pill status-${escapeHtml(schema.status)}">${escapeHtml(schema.status)}</span>
     </div>
     <p class="muted">${escapeHtml(schema.description)}</p>
     ${schema.supportedRevisionLabels.length ? `<p class="muted">Supported revisions: ${schema.supportedRevisionLabels.map((r) => escapeHtml(r)).join(', ')}</p>` : ''}
     <table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Variable</th><th>Scan candidate</th><th>Help</th><th>Warnings</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn small" data-action="export-reviewed-preset" data-id="${attr(schema.id)}">Export as reviewed preset</button>
+    </div>
   </div>`;
 }
 
@@ -905,8 +1087,13 @@ function renderSchemaEditor(script: ScriptFile, scan: ScriptScanResult): string 
     <input type="text" data-bind="schema.description" value="${attr(editor.description)}" />
     <div class="grid2">
       <div><label>Status</label><select data-bind="schema.status">${statusOpts}</select></div>
-      <div><label>Supported revision labels (comma-separated, optional)</label><input type="text" data-bind="schema.supportedRevisionLabels" value="${attr(editor.supportedRevisionLabels)}" /></div>
+      <div><label>Action key (optional — stable concept shared across target variants, e.g. "teach-any-move")</label><input type="text" data-bind="schema.actionKey" value="${attr(editor.actionKey)}" /></div>
     </div>
+    <label>Supported revision labels (comma-separated, optional — free-text, distinct from the game/language/revision target below)</label>
+    <input type="text" data-bind="schema.supportedRevisionLabels" value="${attr(editor.supportedRevisionLabels)}" />
+    <h3>Target compatibility</h3>
+    <p class="muted">Which game/language/revision this schema variant is for. Unknown/Mixed is fine for a draft, but a reviewed schema needs an explicit target.</p>
+    ${targetSelectsHtml('schema.target', editor.target, 'schema-target')}
     <p class="muted">Linked script: ${escapeHtml(script.filename)} (<code>${escapeHtml(script.id)}</code>)</p>
 
     <h3>Likely user-facing candidates</h3>
@@ -964,6 +1151,38 @@ function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: P
   </div>`;
 }
 
+/**
+ * "Reviewed schema preset available" — distinct from presetSuggestionHtml
+ * below: these are the built-in, human-reviewed presets, so applying one
+ * keeps its 'reviewed' status. Every match still requires an explicit
+ * per-preset button click; when more than one preset matches, each gets
+ * its own labeled button rather than picking one automatically.
+ */
+function reviewedPresetSuggestionHtml(s: ScriptFile, project: Project): string {
+  const matches = matchReviewedPresets(REVIEWED_SCHEMA_PRESETS, {
+    filename: s.filename,
+    title: s.lastScan?.title,
+    category: s.category,
+  });
+  const candidates = matches.filter((m) => !project.curatedSchemas.some((cs) => cs.id === `${m.preset.id}-for-${s.id}`));
+  if (candidates.length === 0) return '';
+
+  const buttons = candidates
+    .map(
+      (m) =>
+        `<button class="btn small primary" data-action="apply-reviewed-preset" data-id="${attr(s.id)}" data-preset="${attr(m.preset.id)}">Apply "${escapeHtml(m.preset.label)}"</button>`,
+    )
+    .join(' ');
+  const heading = candidates.length === 1
+    ? `Reviewed schema preset available: ${escapeHtml(candidates[0].preset.label)}`
+    : `${candidates.length} reviewed schema presets could apply — choose one:`;
+
+  return `<div class="badge info" style="display:block;margin:0.4rem 0">
+    ${heading}
+    <div class="row" style="margin-top:0.4rem">${buttons}</div>
+  </div>`;
+}
+
 function presetSuggestionHtml(s: ScriptFile, project: Project): string {
   const preset = findMatchingPreset(SCHEMA_PRESETS, { filename: s.filename, title: s.lastScan?.title });
   if (!preset) return '';
@@ -977,11 +1196,16 @@ function presetSuggestionHtml(s: ScriptFile, project: Project): string {
 
 function renderScriptCard(s: ScriptFile, project: Project): string {
   const lineCount = numberLines(s.rawText).length;
+  const pack = s.packId ? project.scriptPacks.find((pk) => pk.id === s.packId) : undefined;
+  const effectiveTarget = effectiveScriptTarget(s, pack);
   return `<div class="card" data-ref="${attr(s.id)}">
     <div class="row" style="justify-content:space-between">
       <div class="row">
         <strong>${escapeHtml(s.filename)}</strong>
+        ${s.displayName ? `<span class="muted">"${escapeHtml(s.displayName)}"</span>` : ''}
         <span class="muted">${lineCount} line${lineCount === 1 ? '' : 's'}${s.relativePath ? ' · ' + escapeHtml(s.relativePath) : ''} · imported ${escapeHtml(s.importedAt)}</span>
+        <span class="pill">${escapeHtml(targetLabel(effectiveTarget))}</span>
+        ${s.category ? `<span class="pill">${escapeHtml(s.category)}</span>` : ''}
       </div>
       <div class="row">
         <button class="btn small" data-action="run-scan" data-id="${attr(s.id)}">Run scanner</button>
@@ -990,6 +1214,7 @@ function renderScriptCard(s: ScriptFile, project: Project): string {
     </div>
     <label>Notes</label>
     <input type="text" data-bind="script.notes" data-id="${attr(s.id)}" value="${attr(s.notes ?? '')}" placeholder="Optional notes about this script" aria-label="Script notes" />
+    ${reviewedPresetSuggestionHtml(s, project)}
     ${presetSuggestionHtml(s, project)}
     <label>Script text (read-only, stored verbatim)</label>
     ${lineNumberView(s.rawText)}
@@ -1011,11 +1236,25 @@ function batchScanSummaryCard(summary: ReturnType<typeof summarizeBatchScan>): s
 function scriptPackCard(pack: ScriptPack, scripts: readonly ScriptFile[]): string {
   const packScripts = scripts.filter((s) => s.packId === pack.id);
   const unscanned = packScripts.filter((s) => !s.lastScan).length;
+  const esharkInfo = pack.sourceProfile
+    ? `<p class="muted">
+        Source: ${escapeHtml(esharkSourceProfileLabel(pack.sourceProfile))}${pack.detectedRootPath ? ` · detected at "${escapeHtml(pack.detectedRootPath)}"` : ''}
+        · list.json ${pack.hasListJson ? 'found' : 'not found'}
+        ${pack.categoriesDetected && pack.categoriesDetected.length > 0 ? '· categories: ' + pack.categoriesDetected.map(escapeHtml).join(', ') : ''}
+        ${pack.sourceUrl ? `· fetched from ${escapeHtml(pack.sourceUrl)}${pack.sourceRef ? ` @ ${escapeHtml(pack.sourceRef)}` : ''}` : ''}
+        ${pack.fetchedAt ? `· fetched ${escapeHtml(pack.fetchedAt)}` : ''}
+      </p>`
+    : '';
   return `<div class="card ext-tool">
     <div class="row" style="justify-content:space-between">
-      <strong>${escapeHtml(pack.name)}</strong>
+      <div class="row">
+        <strong>${escapeHtml(pack.name)}</strong>
+        <span class="pill">${escapeHtml(targetLabel(pack.defaultTarget))}</span>
+      </div>
       <span class="muted">${packScripts.length} script(s)${pack.sourceFolderName ? ' · from folder "' + escapeHtml(pack.sourceFolderName) + '"' : ''} · imported ${escapeHtml(pack.importedAt)}</span>
     </div>
+    ${esharkInfo}
+    ${pack.targetNotes ? `<p class="muted">${escapeHtml(pack.targetNotes)}</p>` : ''}
     <button class="btn small" data-action="scan-all-in-pack" data-id="${attr(pack.id)}"${packScripts.length === 0 ? ' disabled' : ''}>${unscanned > 0 ? `Scan all scripts (${unscanned} unscanned)` : 'Re-scan all scripts'}</button>
   </div>`;
 }
@@ -1044,6 +1283,8 @@ function scriptSummaryTable(rows: ScriptPackRow[]): string {
         <td>${escapeHtml(r.filename)}</td>
         <td>${r.relativePath ? escapeHtml(r.relativePath) : '—'}</td>
         <td>${r.title ? escapeHtml(r.title) : '—'}</td>
+        <td>${escapeHtml(targetLabel(r.target))}</td>
+        <td>${r.category ? escapeHtml(r.category) : '—'}</td>
         <td>${r.candidateCount}</td>
         <td>${r.userFacingCandidateCount}</td>
         <td>${r.internalCandidateCount}</td>
@@ -1052,12 +1293,44 @@ function scriptSummaryTable(rows: ScriptPackRow[]): string {
       </tr>`,
     )
     .join('');
-  return `<table><thead><tr><th>Filename</th><th>Relative path</th><th>Title</th><th>Candidates</th><th>User-facing</th><th>Internal/helper</th><th>Schema attached</th><th></th></tr></thead><tbody>${trs}</tbody></table>`;
+  return `<table><thead><tr><th>Filename</th><th>Relative path</th><th>Title</th><th>Target</th><th>Category</th><th>Candidates</th><th>User-facing</th><th>Internal/helper</th><th>Schema attached</th><th></th></tr></thead><tbody>${trs}</tbody></table>`;
+}
+
+function supportedScriptsHtml(project: Project): string {
+  if (project.scripts.length === 0) return '';
+  const summary = summarizeSupportedScripts(project.scripts, project.curatedSchemas);
+
+  const readyRows = summary.ready
+    .map(
+      ({ script, schema }) => `<tr>
+        <td>${escapeHtml(schema.label)}</td>
+        <td>${escapeHtml(script.filename)}</td>
+        <td>${escapeHtml(targetLabel(schema.target))}</td>
+        <td>${schema.fields.length}</td>
+        <td><span class="pill status-${escapeHtml(schema.status)}">${escapeHtml(schema.status)}</span></td>
+        <td><button class="btn small" data-action="run-supported-script" data-id="${attr(schema.id)}">Run</button></td>
+      </tr>`,
+    )
+    .join('');
+
+  return `<div class="card">
+    <h3>Supported scripts</h3>
+    <p class="muted">A script is "Ready" once a reviewed schema with an explicit target is attached to it — apply a reviewed preset, or create and review a curated schema.</p>
+    <div class="row filters" role="group" aria-label="Support status">
+      <span class="chip">Ready: ${summary.ready.length}</span>
+      <span class="chip">Needs review: ${summary.needsReview.length}</span>
+      <span class="chip">No candidate fields: ${summary.noCandidates.length}</span>
+      <span class="chip">Disabled/incompatible target: ${summary.disabledOrIncompatible.length}</span>
+    </div>
+    ${summary.ready.length > 0
+      ? `<table><thead><tr><th>Action</th><th>Script</th><th>Target</th><th>Fields</th><th>Status</th><th></th></tr></thead><tbody>${readyRows}</tbody></table>`
+      : '<p class="muted">No scripts are ready to run for this target yet. Apply a reviewed schema preset below, or create/review a curated schema, then match Run Script\'s target.</p>'}
+  </div>`;
 }
 
 function renderScripts(): string {
   const p = state.project!;
-  const allRows = buildScriptPackRows(p.scripts, p.curatedSchemas);
+  const allRows = buildScriptPackRows(p.scripts, p.curatedSchemas, p.scriptPacks);
   const filteredRows = searchScriptRows(filterScriptRows(allRows, state.scriptsFilter), state.scriptsSearch);
   const visibleIds = new Set(filteredRows.map((r) => r.scriptId));
   const visibleScripts = p.scripts.filter((s) => visibleIds.has(s.id));
@@ -1066,7 +1339,7 @@ function renderScripts(): string {
 
   const emptyStateHtml = p.scripts.length === 0
     ? `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
-        <p class="muted">Import a local .txt script, or a whole folder of scripts. The scanner reads them as plain text and helps you create curated schemas.</p>
+        <p class="muted">Fetch E-Sh4rk scripts from GitHub below, or import a local .txt script/folder. The scanner reads them as plain text and helps you create curated schemas.</p>
       </div>`
     : '';
 
@@ -1081,19 +1354,49 @@ function renderScripts(): string {
   const cardsHtml = scriptCards || (p.scripts.length > 0 ? '<div class="empty">No scripts match this filter/search.</div>' : '<div class="empty">No scripts imported yet.</div>');
 
   return `<h1>Manage Scripts <span class="pill">developer-only, informational</span></h1>
-    <p class="muted">Import local .txt action scripts to inspect them as plain text. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
+    <p class="muted">The recommended path is to fetch E-Sh4rk scripts from GitHub, review or apply a reviewed schema preset, then run them from Run Script. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
     ${emptyStateHtml}
+    ${supportedScriptsHtml(p)}
+    <div class="card">
+      <h3>Fetch E-Sh4rk scripts from GitHub <span class="pill">recommended</span></h3>
+      <p class="muted">
+        This performs a network request to GitHub, and only when you click the button below —
+        nothing is fetched automatically, on launch, or in the background. Fetched files are
+        imported as plain text; no generator is run by fetching scripts, and fetched scripts are
+        stored locally afterward.
+      </p>
+      <p class="muted">Source: <code>${escapeHtml(ESHARK_GITHUB_REPO_URL)}</code> (public, read-only) — <code>files_frlg/</code> only.</p>
+      <p class="muted">Set the target for the fetched scripts — leave Unknown/Mixed if you're not sure. Each script can override this individually later.</p>
+      ${targetSelectsHtml('pendingPackTarget', state.pendingPackTarget, 'pending-pack-target-github')}
+      <label for="pending-pack-target-notes-github">Target notes (optional)</label>
+      <input type="text" id="pending-pack-target-notes-github" data-bind="pendingPackTargetNotes" value="${attr(state.pendingPackTargetNotes)}" placeholder="e.g. source, caveats" />
+      <div class="row" style="margin-top:0.5rem">
+        <button class="btn primary" data-action="fetch-eshark-github"${state.esharkFetchInProgress ? ' disabled' : ''}>${state.esharkFetchInProgress ? 'Fetching from GitHub…' : 'Fetch E-Sh4rk scripts from GitHub'}</button>
+      </div>
+    </div>
     ${managementHtml}
     ${cardsHtml}
-    <div class="card">
-      <h3>Import scripts</h3>
-      <div class="row">
+    <details>
+      <summary class="muted" style="cursor:pointer">Advanced / manual import — for offline use or a pinned local copy</summary>
+      <p class="muted">Fetching from GitHub above is the recommended way to get E-Sh4rk scripts. Use local import only if you're offline, want a specific pinned copy, or are working with scripts that aren't on GitHub.</p>
+      <div class="card">
+        <h3>Import a script</h3>
         <button class="btn" data-action="import-script">Import script (.txt)</button>
-        <button class="btn" data-action="import-script-folder">Import script folder</button>
+        <input type="file" accept=".txt,text/plain" data-action="script-file" id="script-file-input" style="display:none" aria-label="Import script file" />
       </div>
-      <input type="file" accept=".txt,text/plain" data-action="script-file" id="script-file-input" style="display:none" aria-label="Import script file" />
-      <input type="file" webkitdirectory multiple data-action="script-folder-file" id="script-folder-input" style="display:none" aria-label="Import script folder" />
-    </div>`;
+      <div class="card">
+        <h3>Import script folder</h3>
+        ${sourceProfileSelectHtml()}
+        <p class="muted">Set the target for scripts in the next folder you import — leave Unknown/Mixed if you're not sure, or the folder mixes targets. Each script can override this individually later.</p>
+        ${targetSelectsHtml('pendingPackTarget', state.pendingPackTarget, 'pending-pack-target')}
+        <label for="pending-pack-target-notes">Target notes (optional)</label>
+        <input type="text" id="pending-pack-target-notes" data-bind="pendingPackTargetNotes" value="${attr(state.pendingPackTargetNotes)}" placeholder="e.g. source, caveats" />
+        <div class="row" style="margin-top:0.5rem">
+          <button class="btn" data-action="import-script-folder">Import script folder</button>
+        </div>
+        <input type="file" webkitdirectory multiple data-action="script-folder-file" id="script-folder-input" style="display:none" aria-label="Import script folder" />
+      </div>
+    </details>`;
 }
 
 function stateSelect(item: ChecklistItem): string {
@@ -1412,6 +1715,10 @@ function resetViewState(project: Project): void {
   state.schemaEditor = null;
   state.scriptsFilter = 'all';
   state.scriptsSearch = '';
+  state.pendingPackTarget = UNKNOWN_TARGET;
+  state.pendingPackTargetNotes = '';
+  state.pendingSourceProfile = 'generic';
+  state.esharkFetchInProgress = false;
 }
 
 /**
@@ -1446,7 +1753,15 @@ async function startNewWorkspace(origin: WorkspaceOrigin): Promise<void> {
  */
 async function openDefaultWorkspace(): Promise<void> {
   const recent = mostRecentWorkspace(state.summaries);
-  let project = recent ? await getProject(recent.id) : null;
+  let project: Project | undefined;
+  try {
+    project = recent ? await getProject(recent.id) : undefined;
+  } catch {
+    // A stored workspace that genuinely can't be migrated (e.g. corrupted)
+    // must never block the app from rendering at all — fall through and
+    // start a fresh one instead of leaving the screen blank.
+    project = undefined;
+  }
   if (!project) {
     project = createProject(
       { revisionLabel: '', languageLabel: '', projectTitle: '', mode: 'documentation', templateKey: TEMPLATES[0].key },
@@ -1555,6 +1870,30 @@ async function handleClick(e: Event): Promise<void> {
       const orig = el.textContent;
       el.textContent = ok ? 'Copied ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'select-advanced-schema': {
+      if (!p || !id) break;
+      const ab = state.actionBuilder;
+      ab.curatedSchemaId = id;
+      const resolved = resolveActionDefinition(ab, p);
+      ab.values = resolved ? defaultActionValues(resolved.template) : {};
+      resetGeneratedOutput(ab);
+      render();
+      break;
+    }
+    case 'run-supported-script': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      const ab = state.actionBuilder;
+      ab.runTarget = schema.target;
+      ab.curatedSchemaId = schema.id;
+      const resolved = resolveActionDefinition(ab, p);
+      ab.values = resolved ? defaultActionValues(resolved.template) : {};
+      resetGeneratedOutput(ab);
+      state.screen = 'actions';
+      render();
       break;
     }
     case 'preview-filled-script': {
@@ -1703,6 +2042,9 @@ async function handleClick(e: Event): Promise<void> {
     case 'import-script-folder':
       (document.getElementById('script-folder-input') as HTMLInputElement | null)?.click();
       break;
+    case 'fetch-eshark-github':
+      void handleFetchEsharkGithub();
+      break;
     case 'remove-script':
       if (p && id) {
         p.scripts = p.scripts.filter((s) => s.id !== id);
@@ -1746,6 +2088,16 @@ async function handleClick(e: Event): Promise<void> {
       commit();
       break;
     }
+    case 'apply-reviewed-preset': {
+      if (!p || !id) break;
+      const presetId = el.dataset.preset;
+      const script = p.scripts.find((s) => s.id === id);
+      const preset = REVIEWED_SCHEMA_PRESETS.find((pr) => pr.id === presetId);
+      if (!script || !preset) break;
+      upsertCuratedSchema(p.curatedSchemas, buildCuratedSchemaFromPreset(preset, script));
+      commit();
+      break;
+    }
     case 'export-draft-schema': {
       if (!p || !id) break;
       const script = p.scripts.find((s) => s.id === id);
@@ -1755,13 +2107,36 @@ async function handleClick(e: Event): Promise<void> {
       downloadText(`${base}-draft-schema.json`, exportDraftActionSchemaJson(schema), 'application/json');
       break;
     }
+    case 'export-reviewed-preset': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      const script = schema.scriptId ? p.scripts.find((s) => s.id === schema.scriptId) : undefined;
+      const scriptFilename = schema.scriptFilename ?? script?.filename;
+      if (!scriptFilename) {
+        window.alert('This schema has no linked script filename to match against — attach it to a script first.');
+        break;
+      }
+      const reviewerNote = window.prompt('Optional reviewer note (leave blank to skip):', '') ?? undefined;
+      const preset = buildReviewedPresetExport({
+        schema,
+        scriptFilename,
+        scriptTitle: script?.lastScan?.title,
+        category: script?.category,
+        reviewerNote: reviewerNote && reviewerNote.trim() ? reviewerNote.trim() : undefined,
+        reviewedAt: nowIso(),
+      });
+      const base = preset.id || 'reviewed-preset';
+      downloadText(`${base}.json`, serializeReviewedPresetForExport(preset), 'application/json');
+      break;
+    }
     case 'attach-curated-schema':
       if (id) (document.getElementById(`curated-schema-input-${id}`) as HTMLInputElement | null)?.click();
       break;
     case 'create-schema-from-scan': {
       if (!p || !id) break;
       const script = p.scripts.find((s) => s.id === id);
-      if (script) openSchemaEditor(script);
+      if (script) openSchemaEditor(script, p);
       render();
       break;
     }
@@ -1941,12 +2316,48 @@ async function handleChange(e: Event): Promise<void> {
     render();
     return;
   }
+  if (bind === 'pendingPackTarget.game') {
+    state.pendingPackTarget = { ...state.pendingPackTarget, game: value as GameTarget['game'] };
+    render();
+    return;
+  }
+  if (bind === 'pendingPackTarget.language') {
+    state.pendingPackTarget = { ...state.pendingPackTarget, language: value as GameTarget['language'] };
+    render();
+    return;
+  }
+  if (bind === 'pendingPackTarget.revision') {
+    state.pendingPackTarget = { ...state.pendingPackTarget, revision: value as GameTarget['revision'] };
+    render();
+    return;
+  }
+  if (bind === 'pendingPackTargetNotes') {
+    state.pendingPackTargetNotes = value;
+    render();
+    return;
+  }
+  if (bind === 'pendingSourceProfile') {
+    state.pendingSourceProfile = value as SourceProfile;
+    render();
+    return;
+  }
   applyBinding(bind, id, value, checked);
 }
 
 function resetGeneratedOutput(ab: ActionBuilderState): void {
   ab.filledScript = null;
   ab.filledScriptSavedBlockId = null;
+}
+
+/** After the run target changes: keep the current schema selected only if it's
+ *  still a default match for the new target, else fall back to the first
+ *  default match (or none) — never silently keep an incompatible selection. */
+function onRunTargetChanged(ab: ActionBuilderState, project: Project | null): void {
+  if (!project) return;
+  ab.curatedSchemaId = pickDefaultCuratedSchemaId(project.curatedSchemas, ab.runTarget, ab.curatedSchemaId);
+  const resolved = resolveActionDefinition(ab, project);
+  ab.values = resolved ? defaultActionValues(resolved.template) : {};
+  resetGeneratedOutput(ab);
 }
 
 function applyActionBinding(bind: string, id: string | undefined, value: string, checked: boolean | undefined): void {
@@ -1965,6 +2376,18 @@ function applyActionBinding(bind: string, id: string | undefined, value: string,
       resetGeneratedOutput(ab);
       break;
     }
+    case 'action.runTarget.game':
+      ab.runTarget = { ...ab.runTarget, game: value as GameTarget['game'] };
+      onRunTargetChanged(ab, project);
+      break;
+    case 'action.runTarget.language':
+      ab.runTarget = { ...ab.runTarget, language: value as GameTarget['language'] };
+      onRunTargetChanged(ab, project);
+      break;
+    case 'action.runTarget.revision':
+      ab.runTarget = { ...ab.runTarget, revision: value as GameTarget['revision'] };
+      onRunTargetChanged(ab, project);
+      break;
     case 'action.field': {
       if (!id || !project) break;
       const resolved = resolveActionDefinition(ab, project);
@@ -2115,21 +2538,118 @@ async function handleScriptFile(input: HTMLInputElement): Promise<void> {
 /** Reads only .txt scripts and recognized metadata files (e.g. list.json) out
  *  of a directory-picker selection — never fetched, never executed, no
  *  particular folder layout required. */
+interface EsharkPackSource {
+  sourceProfile: EsharkSourceProfile;
+  packName: string;
+  detectedRootPath: string;
+  sourceUrl?: string;
+  sourceRef?: string;
+  fetchedAt?: string;
+}
+
+/**
+ * Shared by local E-Sh4rk folder import and the GitHub fetch: turns
+ * already-root-filtered CollectedFile[] into ScriptFile[] (pushed onto the
+ * project) plus one ScriptPack carrying E-Sh4rk source metadata. Returns
+ * null when no .txt scripts were found among the given files — callers
+ * decide how to report that. Never mutates rawText.
+ */
+function importEsharkFiles(
+  p: Project,
+  filesUnderRoot: readonly CollectedFile[],
+  source: EsharkPackSource,
+): { scriptCount: number; hasMetadataFile: boolean; metadataParseError: boolean } | null {
+  const { scripts, metadata, hasMetadataFile, metadataParseError } = collectScriptPackFiles(filesUnderRoot);
+  if (scripts.length === 0) return null;
+  const listEntries = parseEsharkListEntries(metadata);
+
+  const now = nowIso();
+  const packId = uid();
+  const scriptIds: string[] = [];
+  const categoriesDetected = new Set<EsharkCategory>();
+  for (const cs of scripts) {
+    const scriptId = uid();
+    scriptIds.push(scriptId);
+    const scriptFile: ScriptFile = {
+      id: scriptId,
+      filename: cs.filename,
+      rawText: cs.rawText,
+      importedAt: now,
+      relativePath: cs.relativePath,
+      packId,
+    };
+    if (cs.category) {
+      scriptFile.category = cs.category;
+      categoriesDetected.add(cs.category);
+    }
+    const listEntry = lookupEsharkListEntry(listEntries, cs.filename);
+    if (listEntry?.displayName) scriptFile.displayName = listEntry.displayName;
+    p.scripts.push(scriptFile);
+  }
+
+  const pack: ScriptPack = {
+    id: packId,
+    name: source.packName,
+    importedAt: now,
+    defaultTarget: state.pendingPackTarget,
+    scriptIds,
+    sourceProfile: source.sourceProfile,
+    detectedRootPath: source.detectedRootPath,
+    hasListJson: hasMetadataFile,
+    categoriesDetected: Array.from(categoriesDetected).sort(),
+  };
+  const targetNotes = state.pendingPackTargetNotes.trim();
+  if (targetNotes) pack.targetNotes = targetNotes;
+  if (source.sourceUrl) pack.sourceUrl = source.sourceUrl;
+  if (source.sourceRef) pack.sourceRef = source.sourceRef;
+  if (source.fetchedAt) pack.fetchedAt = source.fetchedAt;
+  p.scriptPacks.push(pack);
+
+  return { scriptCount: scripts.length, hasMetadataFile, metadataParseError };
+}
+
 async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
   const files = Array.from(input.files ?? []);
   input.value = '';
   const p = state.project;
   if (!files.length || !p) return;
 
-  const collected: CollectedFile[] = [];
+  const allCollected: CollectedFile[] = [];
   for (const file of files) {
     const relativePath = file.webkitRelativePath || file.name;
     if (!isRelevantPackFile(relativePath)) continue;
     const text = await readFileText(file);
-    collected.push({ relativePath, text });
+    allCollected.push({ relativePath, text });
   }
 
-  const { scripts } = collectScriptPackFiles(collected);
+  const profile = state.pendingSourceProfile;
+
+  if (profile !== 'generic') {
+    const selection = selectEsharkFiles(allCollected);
+    if (!selection) {
+      window.alert(
+        'No files_frlg folder was found in that selection. Select the files_frlg folder itself, or a folder that contains it (like the offline app or repo folder), then try again.',
+      );
+      return;
+    }
+    const sourceFolderName = detectSourceFolderName(selection.files);
+    const imported = importEsharkFiles(p, selection.files, {
+      sourceProfile: profile,
+      packName: sourceFolderName ?? `Script pack (${nowIso().slice(0, 10)})`,
+      detectedRootPath: displayRootPath(selection.root),
+    });
+    if (!imported) {
+      window.alert('No .txt scripts found in that folder.');
+      return;
+    }
+    commit();
+    if (imported.hasMetadataFile && imported.metadataParseError) {
+      window.alert('list.json was found but could not be parsed as JSON — it was ignored. Scripts still imported normally.');
+    }
+    return;
+  }
+
+  const { scripts } = collectScriptPackFiles(allCollected);
   if (scripts.length === 0) {
     window.alert('No .txt scripts found in that folder.');
     return;
@@ -2151,16 +2671,61 @@ async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
     };
     p.scripts.push(scriptFile);
   }
-  const sourceFolderName = detectSourceFolderName(collected);
+  const sourceFolderName = detectSourceFolderName(allCollected);
   const pack: ScriptPack = {
     id: packId,
     name: sourceFolderName ?? `Script pack (${now.slice(0, 10)})`,
     importedAt: now,
+    defaultTarget: state.pendingPackTarget,
     scriptIds,
   };
   if (sourceFolderName) pack.sourceFolderName = sourceFolderName;
+  const targetNotes = state.pendingPackTargetNotes.trim();
+  if (targetNotes) pack.targetNotes = targetNotes;
   p.scriptPacks.push(pack);
   commit();
+}
+
+/**
+ * The one function in the UI layer allowed to trigger a network request —
+ * and only ever from this exact click handler, never from render() or app
+ * init. Fetches read-only script text from GitHub and feeds it through the
+ * same importEsharkFiles() pipeline as a local E-Sh4rk folder import.
+ */
+async function handleFetchEsharkGithub(): Promise<void> {
+  const p = state.project;
+  if (!p || state.esharkFetchInProgress) return;
+  state.esharkFetchInProgress = true;
+  render();
+
+  try {
+    const result = await fetchEsharkFilesFrlg();
+    state.esharkFetchInProgress = false;
+    const imported = importEsharkFiles(p, result.files, {
+      sourceProfile: 'eshark-github',
+      packName: `E-Sh4rk scripts (GitHub @ ${result.ref})`,
+      detectedRootPath: displayRootPath(result.root),
+      sourceUrl: result.sourceUrl,
+      sourceRef: result.ref,
+      fetchedAt: nowIso(),
+    });
+    if (!imported) {
+      render();
+      window.alert('No .txt scripts were found in the fetched files_frlg folder.');
+      return;
+    }
+    commit();
+    if (imported.hasMetadataFile && imported.metadataParseError) {
+      window.alert('list.json was found but could not be parsed as JSON — it was ignored. Scripts still imported normally.');
+    }
+    window.alert(
+      `Fetched ${imported.scriptCount} script(s) from GitHub. No generator was run — scripts were imported as plain text and stored locally.`,
+    );
+  } catch (err) {
+    state.esharkFetchInProgress = false;
+    render();
+    window.alert(err instanceof EsharkFetchError ? `Fetch failed: ${err.message}` : 'Fetch failed: could not reach GitHub.');
+  }
 }
 
 async function handleCuratedSchemaFile(input: HTMLInputElement): Promise<void> {

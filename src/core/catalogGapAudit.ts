@@ -4,9 +4,15 @@
 // report, not a claim of semantic correctness. Nothing here fetches data,
 // invokes a generator, or silently rewrites a saved schema.
 
-import type { CuratedActionSchema, Project, ReferenceCatalogId, ScriptFile, VariableCandidate, CuratedSchemaField } from './types.js';
+import type { CuratedActionSchema, GameTarget, Project, ReferenceCatalogId, ScriptFile, VariableCandidate, CuratedSchemaField } from './types.js';
 import { REFERENCE_CATALOGS, REFERENCE_CATALOG_IDS } from '../reference/index.js';
 import { getBoundedFieldPreset } from './boundedFieldPresets.js';
+import {
+  buildSupportedActionRegistry,
+  type SupportedAction,
+  type SupportedActionVariant,
+  type SupportedActionVariantStatus,
+} from './supportedActionRegistry.js';
 
 export type CatalogNeedConfidence = 'high' | 'medium' | 'low';
 
@@ -397,4 +403,135 @@ export function buildCatalogGapAudit(project: Project, nowIso: () => string): Ca
 /** Serialize the audit for local export only (no network) — never includes raw script text, only ids/filenames/variable names/reasons. */
 export function exportCatalogGapAuditJson(audit: CatalogGapAudit): string {
   return JSON.stringify(audit, null, 2);
+}
+
+// --- Grouping by supported action/variant (core/supportedActionRegistry.ts) -
+//
+// The functions above are unchanged and remain independently useful (raw
+// classification, the flat CatalogGapAudit, JSON export) — everything below
+// is an additive presentation layer that reorganizes the same findings
+// around actions/variants, for Setup's Catalog Audit panel.
+
+export interface ActionVariantCatalogAudit {
+  actionKey: string;
+  actionLabel: string;
+  variantId: string;
+  schemaId: string;
+  target: GameTarget;
+  scriptFilename?: string;
+  scriptRelativePath?: string;
+  status: SupportedActionVariantStatus;
+  /** This variant's own schema fields classified as needing a registered-but-empty or partial catalog. */
+  catalogNeeds: readonly FieldClassification[];
+  /** This variant's own stale-field findings (see findStaleSchemaFields). */
+  staleFieldRepairs: readonly StaleFieldFinding[];
+  /** Placeholder until core/schemaVerification.ts (experiment/schema-verification-harness) merges — no live verification data available here yet. */
+  verificationStatus: 'not-available';
+}
+
+export interface ActionCatalogAuditGroup {
+  actionKey: string;
+  actionLabel: string;
+  variants: readonly ActionVariantCatalogAudit[];
+}
+
+export interface UnsupportedScriptCatalogAudit {
+  scriptId: string;
+  scriptFilename: string;
+  /** This script's own scanned candidates classified as needing a catalog/bounded control — same data as the flat audit, scoped to this one script. */
+  catalogNeeds: readonly FieldClassification[];
+}
+
+export interface SupportedActionCatalogAudit {
+  /** "Ready supported actions" — every action with at least one ready variant, all of its variants shown together (never duplicated as separate top-level rows). */
+  readyActions: readonly ActionCatalogAuditGroup[];
+  /** "Action variants with missing catalog coverage" — every variant (any status) whose schema has a catalog need or a stale field. */
+  variantsWithGaps: readonly ActionVariantCatalogAudit[];
+  /** "Unsupported scripts" — scripts with no curated schema attached at all yet. */
+  unsupportedScripts: readonly UnsupportedScriptCatalogAudit[];
+  /** "Unknown/manual-review fields" — unchanged from the flat audit. */
+  unknownFields: readonly UnknownFieldNeed[];
+}
+
+function buildVariantCatalogAudit(
+  action: SupportedAction,
+  variant: SupportedActionVariant,
+  project: Project,
+  audit: CatalogGapAudit,
+): ActionVariantCatalogAudit {
+  const schema = project.curatedSchemas.find((s) => s.id === variant.schemaId);
+  // Only fields that STILL need catalog work — a field already correctly
+  // reference-select for the matching catalog classifies the same way
+  // (classifySchemaField only looks at the variable name/hint) but isn't a
+  // "need" anymore, mirroring findStaleSchemaFields' own staleness check.
+  const catalogNeeds = schema
+    ? schema.fields
+        .map((f) => ({ field: f, classification: classifySchemaField(f, variant.scriptId, variant.scriptFilename) }))
+        .filter(
+          ({ field, classification }) =>
+            (classification.kind === 'reference-catalog-needed' || classification.kind === 'existing-catalog-partial') &&
+            (field.type !== 'reference-select' || field.referenceCatalogId !== classification.catalogId),
+        )
+        .map(({ classification }) => classification)
+    : [];
+  const staleFieldRepairs = audit.staleSchemaFields.filter((f) => f.schemaId === variant.schemaId);
+
+  const result: ActionVariantCatalogAudit = {
+    actionKey: action.actionKey,
+    actionLabel: action.label,
+    variantId: variant.variantId,
+    schemaId: variant.schemaId,
+    target: variant.target,
+    status: variant.status,
+    catalogNeeds,
+    staleFieldRepairs,
+    verificationStatus: 'not-available',
+  };
+  if (variant.scriptFilename) result.scriptFilename = variant.scriptFilename;
+  if (variant.relativePath) result.scriptRelativePath = variant.relativePath;
+  return result;
+}
+
+/**
+ * Reorganize a flat CatalogGapAudit around the supported-action/variant
+ * model — Setup's Catalog Audit panel renders from this, not the flat
+ * shape directly. Never invents data: an action/variant's catalog needs
+ * and stale-field repairs are the exact same findings the flat audit
+ * already computed, just grouped differently.
+ */
+export function groupCatalogAuditBySupportedAction(project: Project, audit: CatalogGapAudit): SupportedActionCatalogAudit {
+  const registry = buildSupportedActionRegistry(project);
+
+  const readyActions: ActionCatalogAuditGroup[] = registry
+    .filter((action) => action.variants.some((v) => v.status === 'ready'))
+    .map((action) => ({
+      actionKey: action.actionKey,
+      actionLabel: action.label,
+      variants: action.variants.map((v) => buildVariantCatalogAudit(action, v, project, audit)),
+    }));
+
+  const allVariantAudits = registry.flatMap((action) => action.variants.map((v) => buildVariantCatalogAudit(action, v, project, audit)));
+  const variantsWithGaps = allVariantAudits.filter((v) => v.catalogNeeds.length > 0 || v.staleFieldRepairs.length > 0);
+
+  // "Unsupported" here means "no curated schema/variant attached at all yet" —
+  // broader than getUnsupportedScripts' "zero candidates" bucket, since a
+  // scanned-but-not-yet-curated script still belongs here (it has no action
+  // either way), and its own candidates' catalog needs are worth surfacing.
+  const unsupportedScripts: UnsupportedScriptCatalogAudit[] = project.scripts
+    .filter((s) => !project.curatedSchemas.some((cs) => cs.scriptId === s.id))
+    .map((s) => ({
+      scriptId: s.id,
+      scriptFilename: s.filename,
+      catalogNeeds: (s.lastScan?.candidates ?? [])
+        .filter((c) => !c.internal)
+        .map((c) => classifyCandidate(c, s.id, s.filename))
+        .filter((c) => c.kind === 'reference-catalog-needed' || c.kind === 'existing-catalog-partial'),
+    }));
+
+  return {
+    readyActions,
+    variantsWithGaps,
+    unsupportedScripts,
+    unknownFields: audit.unknownFields,
+  };
 }

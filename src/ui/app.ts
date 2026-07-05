@@ -81,7 +81,15 @@ import {
 import { REVIEWED_SCHEMA_PRESETS } from '../templates/reviewed-schema-presets.js';
 import { referenceEntryLabel } from '../core/referenceData.js';
 import { REFERENCE_CATALOGS, REFERENCE_CATALOG_IDS, getReferenceCatalog } from '../reference/index.js';
-import { buildCatalogGapAudit, exportCatalogGapAuditJson, applyStaleFieldRepair } from '../core/catalogGapAudit.js';
+import {
+  buildCatalogGapAudit,
+  exportCatalogGapAuditJson,
+  applyStaleFieldRepair,
+  groupCatalogAuditBySupportedAction,
+  type FieldClassification,
+  type StaleFieldFinding,
+  type ActionVariantCatalogAudit,
+} from '../core/catalogGapAudit.js';
 import {
   TARGET_GAMES,
   TARGET_LANGUAGES,
@@ -1595,88 +1603,85 @@ function compactCatalogHtml(project: Project): string {
   </div>`;
 }
 
-function confidenceBadgeClass(confidence: 'high' | 'medium' | 'low'): string {
-  return confidence === 'high' ? 'info' : confidence === 'medium' ? 'warning' : 'error';
+/** A variant's own catalog needs, as a short "variable → catalog" summary list. */
+function catalogNeedsSummaryHtml(needs: readonly FieldClassification[]): string {
+  if (needs.length === 0) return '<span class="muted">—</span>';
+  return needs.map((n) => `${escapeHtml(n.variableName)} → ${escapeHtml(n.catalogId ?? '?')}`).join(', ');
 }
 
-/** Group a flat list of FieldClassification by their scriptId+variableName into one "example" summary line each, capped for display. */
-function exampleFieldsSummary(fields: readonly { scriptId?: string; scriptFilename?: string; variableName: string }[], max = 5): string {
-  const examples = fields.slice(0, max).map((f) => `${f.scriptFilename ?? f.scriptId ?? '?'}: ${f.variableName}`);
-  const more = fields.length > max ? ` (+${fields.length - max} more)` : '';
-  return examples.join(', ') + more;
+/** A variant's own stale-field repair suggestions, each with its own "Repair" button (never applied without this explicit per-field confirm). */
+function variantStaleFieldRepairsHtml(schemaId: string, repairs: readonly StaleFieldFinding[]): string {
+  const visible = repairs.filter((f) => !state.catalogAuditIgnored.has(`stale:${f.schemaId}:${f.classification.variableName}`));
+  if (visible.length === 0) return '<span class="muted">—</span>';
+  return visible
+    .map((f) => {
+      const afterDescription = f.suggestedType === 'reference-select'
+        ? `reference-select (${f.classification.catalogId})`
+        : `select (${f.classification.boundedPresetId})`;
+      return `${escapeHtml(f.classification.variableName)}: ${escapeHtml(f.currentType)} → ${escapeHtml(afterDescription)}
+        <button class="btn small primary" data-action="repair-stale-field" data-id="${attr(schemaId)}" data-variable="${attr(f.classification.variableName)}">Repair</button>`;
+    })
+    .join('<br>');
+}
+
+const ACTION_VARIANT_AUDIT_TABLE_HEAD =
+  '<thead><tr><th>Action</th><th>Target</th><th>Script</th><th>Schema id</th><th>Status</th><th>Catalog needs</th><th>Stale field repairs</th><th>Verification</th></tr></thead>';
+
+/** One row for a supported-action variant's catalog audit — used both grouped (Ready supported actions) and flat (variants with gaps). */
+function actionVariantAuditRowHtml(v: ActionVariantCatalogAudit): string {
+  const statusPillClass = v.status === 'ready' ? 'reviewed' : v.status === 'disabled' ? 'disabled' : 'draft';
+  return `<tr>
+    <td>${escapeHtml(v.actionLabel)}</td>
+    <td>${escapeHtml(targetLabel(v.target))}</td>
+    <td>${v.scriptFilename ? escapeHtml(v.scriptFilename) : '—'}</td>
+    <td><code>${escapeHtml(v.schemaId)}</code></td>
+    <td><span class="pill status-${statusPillClass}">${escapeHtml(v.status)}</span></td>
+    <td>${catalogNeedsSummaryHtml(v.catalogNeeds)}</td>
+    <td>${variantStaleFieldRepairsHtml(v.schemaId, v.staleFieldRepairs)}</td>
+    <td><span class="muted">${escapeHtml(v.verificationStatus)}</span></td>
+  </tr>`;
 }
 
 /**
- * Setup/Advanced-only "Catalog Audit" panel — a data-driven, review-
- * prioritization report built entirely from already-known project data and
- * the local reference-catalog/bounded-preset registries. Never fetches
- * data, never invokes a generator, never silently rewrites a schema.
+ * Setup/Advanced-only "Catalog Audit" panel — grouped around the
+ * supported-action/variant model (core/supportedActionRegistry.ts):
+ * Ready supported actions, action variants with missing catalog coverage,
+ * unsupported scripts, and unknown/manual-review fields. Built entirely
+ * from already-known project data and the local reference-catalog/
+ * bounded-preset registries — never fetches data, never invokes a
+ * generator, never silently rewrites a schema. Never shown in Run Script.
  */
 function catalogAuditPanelHtml(project: Project): string {
   const audit = buildCatalogGapAudit(project, nowIso);
+  const grouped = groupCatalogAuditBySupportedAction(project, audit);
   const ignored = state.catalogAuditIgnored;
 
-  const missingCatalogsRows = audit.missingCatalogs
-    .filter((n) => !ignored.has(`catalog:${n.catalogId}`))
-    .map((need) => {
-      const scriptsAffected = new Set(need.suggestedByFields.map((f) => f.scriptId)).size;
-      const topConfidence = need.suggestedByFields.some((f) => f.confidence === 'high') ? 'high' : need.suggestedByFields.some((f) => f.confidence === 'medium') ? 'medium' : 'low';
-      return `<tr>
-        <td>${escapeHtml(need.catalogId)}</td>
-        <td>${scriptsAffected}</td>
-        <td>${escapeHtml(exampleFieldsSummary(need.suggestedByFields))}</td>
-        <td><span class="badge ${confidenceBadgeClass(topConfidence)}">${escapeHtml(topConfidence)}</span></td>
-        <td><button class="btn small" data-action="ignore-catalog-finding" data-id="catalog:${attr(need.catalogId)}">Mark ignored</button></td>
-      </tr>`;
-    })
+  const readyActionsHtml = grouped.readyActions
+    .map(
+      (group) => `<div class="card ext-tool">
+        <h5>${escapeHtml(group.actionLabel)}</h5>
+        <table>${ACTION_VARIANT_AUDIT_TABLE_HEAD}<tbody>${group.variants.map(actionVariantAuditRowHtml).join('')}</tbody></table>
+      </div>`,
+    )
     .join('');
 
-  const partialCatalogsRows = audit.partialCatalogsUsed
-    .filter((c) => !ignored.has(`partial:${c.catalogId}`))
+  const variantsWithGapsRows = grouped.variantsWithGaps.map(actionVariantAuditRowHtml).join('');
+
+  const unsupportedScriptsRows = grouped.unsupportedScripts
+    .filter((s) => !ignored.has(`unsupported:${s.scriptId}`))
     .map(
-      (c) => `<tr>
-        <td>${escapeHtml(c.catalogId)}</td>
-        <td>${c.entryCount}</td>
-        <td>${c.usedBySchemaIds.length}</td>
-        <td><button class="btn small" data-action="ignore-catalog-finding" data-id="partial:${attr(c.catalogId)}">Mark ignored</button></td>
+      (s) => `<tr>
+        <td>${escapeHtml(s.scriptFilename)}</td>
+        <td>${catalogNeedsSummaryHtml(s.catalogNeeds)}</td>
+        <td>
+          <button class="btn small" data-action="open-script" data-id="${attr(s.scriptId)}">Open script review</button>
+          <button class="btn small" data-action="ignore-catalog-finding" data-id="unsupported:${attr(s.scriptId)}">Mark ignored</button>
+        </td>
       </tr>`,
     )
     .join('');
 
-  const staleFieldsRows = audit.staleSchemaFields
-    .filter((f) => !ignored.has(`stale:${f.schemaId}:${f.classification.variableName}`))
-    .map((f) => {
-      const key = `stale:${f.schemaId}:${f.classification.variableName}`;
-      const afterDescription = f.suggestedType === 'reference-select'
-        ? `reference-select (${f.classification.catalogId})`
-        : `select (${f.classification.boundedPresetId})`;
-      return `<tr>
-        <td>${escapeHtml(f.schemaLabel)}${f.scriptFilename ? ' · ' + escapeHtml(f.scriptFilename) : ''}</td>
-        <td>${escapeHtml(f.classification.variableName)}</td>
-        <td>${escapeHtml(f.currentType)} → ${escapeHtml(afterDescription)}</td>
-        <td><span class="badge ${confidenceBadgeClass(f.classification.confidence)}">${escapeHtml(f.classification.confidence)}</span></td>
-        <td>
-          <button class="btn small primary" data-action="repair-stale-field" data-id="${attr(f.schemaId)}" data-variable="${attr(f.classification.variableName)}">Repair suggested</button>
-          <button class="btn small" data-action="ignore-catalog-finding" data-id="${attr(key)}">Mark ignored</button>
-        </td>
-      </tr>`;
-    })
-    .join('');
-
-  const boundedControlsRows = audit.suggestedBoundedControls
-    .filter((c) => !ignored.has(`bounded:${c.boundedPresetId}`))
-    .map((c) => {
-      const scriptsAffected = new Set(c.suggestedByFields.map((f) => f.scriptId)).size;
-      return `<tr>
-        <td>${escapeHtml(c.label)}</td>
-        <td>${scriptsAffected}</td>
-        <td>${escapeHtml(exampleFieldsSummary(c.suggestedByFields))}</td>
-        <td><button class="btn small" data-action="ignore-catalog-finding" data-id="bounded:${attr(c.boundedPresetId)}">Mark ignored</button></td>
-      </tr>`;
-    })
-    .join('');
-
-  const unknownFieldsRows = audit.unknownFields
+  const unknownFieldsRows = grouped.unknownFields
     .filter((f) => !ignored.has(`unknown:${f.scriptId}:${f.variableName}`))
     .map((f) => {
       const key = `unknown:${f.scriptId}:${f.variableName}`;
@@ -1692,16 +1697,6 @@ function catalogAuditPanelHtml(project: Project): string {
     })
     .join('');
 
-  const blockedScriptsRows = audit.topBlockedScripts
-    .map(
-      (b) => `<tr>
-        <td>${escapeHtml(b.scriptFilename)}</td>
-        <td>${b.blockedByCount}</td>
-        <td><button class="btn small" data-action="open-script" data-id="${attr(b.scriptId)}">Open script review</button></td>
-      </tr>`,
-    )
-    .join('');
-
   return `<details id="catalog-audit-details"${state.catalogAuditOpen ? ' open' : ''}>
     <summary class="muted" style="cursor:pointer">Catalog Audit <span class="pill">Setup/Advanced only</span></summary>
     <div class="card">
@@ -1710,35 +1705,23 @@ function catalogAuditPanelHtml(project: Project): string {
         <button class="btn" data-action="export-catalog-audit">Export audit JSON</button>
       </div>
 
-      <h4>Missing catalogs</h4>
-      ${missingCatalogsRows
-        ? `<table><thead><tr><th>Catalog</th><th>Scripts affected</th><th>Examples</th><th>Confidence</th><th></th></tr></thead><tbody>${missingCatalogsRows}</tbody></table>`
-        : '<p class="muted">No missing-catalog needs detected from scanned scripts.</p>'}
+      <h4>Ready supported actions</h4>
+      ${readyActionsHtml || '<p class="muted">No supported actions are ready yet.</p>'}
 
-      <h4>Partial catalogs currently used</h4>
-      ${partialCatalogsRows
-        ? `<table><thead><tr><th>Catalog</th><th>Entries</th><th>Schemas using it</th><th></th></tr></thead><tbody>${partialCatalogsRows}</tbody></table>`
-        : '<p class="muted">No partial catalog is currently in use by a schema.</p>'}
+      <h4>Action variants with missing catalog coverage</h4>
+      ${variantsWithGapsRows
+        ? `<table>${ACTION_VARIANT_AUDIT_TABLE_HEAD}<tbody>${variantsWithGapsRows}</tbody></table>`
+        : '<p class="muted">No action variant currently has a catalog need or stale field.</p>'}
 
-      <h4>Stale schema fields</h4>
-      ${staleFieldsRows
-        ? `<table><thead><tr><th>Schema</th><th>Variable</th><th>Suggested repair</th><th>Confidence</th><th></th></tr></thead><tbody>${staleFieldsRows}</tbody></table>`
-        : '<p class="muted">No stale schema fields detected.</p>'}
-
-      <h4>Suggested bounded controls</h4>
-      ${boundedControlsRows
-        ? `<table><thead><tr><th>Control</th><th>Scripts affected</th><th>Examples</th><th></th></tr></thead><tbody>${boundedControlsRows}</tbody></table>`
-        : '<p class="muted">No bounded-control suggestions right now.</p>'}
+      <h4>Unsupported scripts</h4>
+      ${unsupportedScriptsRows
+        ? `<table><thead><tr><th>Script</th><th>Catalog needs</th><th></th></tr></thead><tbody>${unsupportedScriptsRows}</tbody></table>`
+        : '<p class="muted">Every script has a curated schema attached.</p>'}
 
       <h4>Unknown / manual-review fields</h4>
       ${unknownFieldsRows
         ? `<table><thead><tr><th>Script</th><th>Variable</th><th>Reason</th><th></th></tr></thead><tbody>${unknownFieldsRows}</tbody></table>`
         : '<p class="muted">No unrecognized fields right now.</p>'}
-
-      <h4>Top scripts blocked by missing catalog coverage</h4>
-      ${blockedScriptsRows
-        ? `<table><thead><tr><th>Script</th><th>Blocked fields</th><th></th></tr></thead><tbody>${blockedScriptsRows}</tbody></table>`
-        : '<p class="muted">No scripts are currently blocked by a missing catalog.</p>'}
     </div>
   </details>`;
 }

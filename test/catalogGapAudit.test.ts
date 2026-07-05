@@ -10,6 +10,7 @@ import {
   applyStaleFieldRepair,
   buildCatalogGapAudit,
   exportCatalogGapAuditJson,
+  groupCatalogAuditBySupportedAction,
 } from '../src/core/catalogGapAudit.js';
 
 const ISO = '2026-01-01T00:00:00.000Z';
@@ -267,5 +268,119 @@ describe('applyStaleFieldRepair', () => {
     const finding = findStaleSchemaFields(makeProject([], [schema]))[0]!;
     const repaired = applyStaleFieldRepair(schema, finding);
     expect(repaired.fields[1]).toEqual(schema.fields[1]);
+  });
+});
+
+const FR_EN_10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+const FR_EN_11 = { game: 'FireRed', language: 'English', revision: '1.1' } as const;
+const LG_EN_10 = { game: 'LeafGreen', language: 'English', revision: '1.0' } as const;
+
+function makeVariantSchema(over: Partial<CuratedActionSchema> = {}): CuratedActionSchema {
+  return {
+    id: 'schema-fr11', label: 'Teach Pokémon Any Move', description: '', actionKey: 'teach-any-move',
+    target: FR_EN_11, scriptId: 'a', scriptFilename: 'a.txt', supportedRevisionLabels: [], status: 'reviewed',
+    fields: [{ key: 'heldItem', label: 'Held item', type: 'text', required: false, variableName: 'heldItem' }],
+    ...over,
+  };
+}
+
+describe('groupCatalogAuditBySupportedAction — grouping by supported action/actionKey', () => {
+  it('groups multiple target variants under the same actionKey into one readyActions entry, never duplicated as separate top-level rows', () => {
+    const scripts = ['a', 'b', 'c'].map((id) => makeScript(id, ITEM_SCRIPT));
+    const schemas = [
+      makeVariantSchema({ id: 's1', target: FR_EN_10, scriptId: 'a', scriptFilename: 'a.txt' }),
+      makeVariantSchema({ id: 's2', target: FR_EN_11, scriptId: 'b', scriptFilename: 'b.txt' }),
+      makeVariantSchema({ id: 's3', target: LG_EN_10, scriptId: 'c', scriptFilename: 'c.txt' }),
+    ];
+    const project = makeProject(scripts, schemas);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+
+    expect(grouped.readyActions).toHaveLength(1);
+    expect(grouped.readyActions[0]!.actionKey).toBe('teach-any-move');
+    expect(grouped.readyActions[0]!.variants).toHaveLength(3);
+    expect(grouped.readyActions[0]!.variants.map((v) => v.target)).toEqual([FR_EN_10, FR_EN_11, LG_EN_10]);
+  });
+
+  it('a ready variant with a stale/catalog-needing field appears in both readyActions and variantsWithGaps', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema(); // heldItem is plain text -> classifies as needing gen3-items
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+
+    const variant = grouped.readyActions[0]!.variants[0]!;
+    expect(variant.catalogNeeds.some((c) => c.catalogId === 'gen3-items')).toBe(true);
+    expect(grouped.variantsWithGaps.some((v) => v.schemaId === schema.id)).toBe(true);
+  });
+
+  it('a draft (non-ready) variant with a catalog need appears in variantsWithGaps but not in readyActions', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema({ status: 'draft' });
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+
+    expect(grouped.readyActions).toEqual([]);
+    expect(grouped.variantsWithGaps.some((v) => v.schemaId === schema.id)).toBe(true);
+    expect(grouped.variantsWithGaps[0]!.status).toBe('needs-review');
+  });
+
+  it('a variant with no catalog needs or stale fields does not appear in variantsWithGaps', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema({
+      fields: [{ key: 'heldItem', label: 'Held item', type: 'reference-select', required: false, variableName: 'heldItem', referenceCatalogId: 'gen3-items' }],
+    });
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+
+    expect(grouped.variantsWithGaps).toEqual([]);
+    expect(grouped.readyActions[0]!.variants[0]!.catalogNeeds).toEqual([]);
+  });
+
+  it('every variant carries a "not-available" verification-status placeholder', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema();
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    expect(grouped.readyActions[0]!.variants[0]!.verificationStatus).toBe('not-available');
+  });
+
+  it('a script with no curated schema at all is grouped under unsupportedScripts, with its own candidate-level catalog needs', () => {
+    const project = makeProject([makeScript('a', SPECIES_SCRIPT)]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+
+    expect(grouped.unsupportedScripts).toHaveLength(1);
+    expect(grouped.unsupportedScripts[0]!.scriptFilename).toBe('a.txt');
+    expect(grouped.unsupportedScripts[0]!.catalogNeeds.some((c) => c.catalogId === 'gen3-species')).toBe(true);
+  });
+
+  it('a script that already has a curated schema is not listed under unsupportedScripts', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema();
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    expect(grouped.unsupportedScripts).toEqual([]);
+  });
+
+  it('passes unknownFields through unchanged from the flat audit', () => {
+    const project = makeProject([makeScript('a', UNKNOWN_SCRIPT)]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    expect(grouped.unknownFields).toEqual(audit.unknownFields);
+    expect(grouped.unknownFields.some((f) => f.variableName === 'someTotallyMadeUpThing')).toBe(true);
+  });
+
+  it('an action with zero ready variants (all draft/disabled) contributes nothing to readyActions', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema({ status: 'disabled' });
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    expect(grouped.readyActions).toEqual([]);
   });
 });

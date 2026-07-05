@@ -305,6 +305,15 @@ export interface VariableCandidate {
   rawValue: string;
   /** 1-based line number within the script's header section. */
   line: number;
+  /** The full, unmodified header line this candidate was scanned from — informational/review only, never re-parsed. */
+  rawLine?: string;
+  /**
+   * An unusual marker/operator token found between the variable name and
+   * `=` (e.g. the `?` in `item_index ? = 1`) — distinct from the `?` some
+   * scripts place after a body-line `{expr}` substitution. Informational
+   * only: recorded for review, not evaluated or assigned any meaning.
+   */
+  assignmentMarker?: string;
   /** Trailing same-line comment, or the preceding full-line comment, if any. */
   nearbyComment?: string;
   /** A recognized `@input:xxx` tag found on or near this candidate, if any. */

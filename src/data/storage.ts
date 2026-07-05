@@ -404,6 +404,11 @@ function parseVariableCandidate(v: unknown, path: string): VariableCandidate {
   if (annotation !== undefined) candidate.annotation = annotation;
   const inputHint = asOptString(o.inputHint, `${path}.inputHint`);
   if (inputHint !== undefined) candidate.inputHint = inputHint;
+  // Older saved scans predate these fields; both simply absent, never defaulted to a guess.
+  const rawLine = asOptString(o.rawLine, `${path}.rawLine`);
+  if (rawLine !== undefined) candidate.rawLine = rawLine;
+  const assignmentMarker = asOptString(o.assignmentMarker, `${path}.assignmentMarker`);
+  if (assignmentMarker !== undefined) candidate.assignmentMarker = assignmentMarker;
   return candidate;
 }
 

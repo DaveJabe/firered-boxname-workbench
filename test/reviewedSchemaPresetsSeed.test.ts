@@ -302,3 +302,53 @@ describe('Create Pokémon From Nothing preset', () => {
     expect(result.filledScriptText).not.toContain('Pikachu');
   });
 });
+
+describe('Get Any Item preset', () => {
+  const preset = REVIEWED_SCHEMA_PRESETS.find((p) => p.actionKey === 'get-any-item')!;
+
+  it('exists and is reviewed with an explicit target', () => {
+    expect(preset).toBeDefined();
+    expect(preset.status).toBe('reviewed');
+    expect(preset.target).toEqual({ game: 'FireRed', language: 'English', revision: '1.1' });
+  });
+
+  it('includes exactly the user-facing fields: item_index, amount, inaccurate_emu', () => {
+    expect(preset.fields.map((f) => f.variableName).sort()).toEqual(['amount', 'inaccurate_emu', 'item_index']);
+  });
+
+  it('matches a script literally named GetAnyItem.txt', () => {
+    const matches = matchReviewedPresets(REVIEWED_SCHEMA_PRESETS, { filename: 'GetAnyItem.txt', category: 'misc' });
+    expect(matches.some((m) => m.preset.id === preset.id)).toBe(true);
+  });
+
+  it('renders item_index as a reference-select backed by gen3-items', () => {
+    const item = preset.fields.find((f) => f.variableName === 'item_index')!;
+    expect(item.type).toBe('reference-select');
+    expect(item.referenceCatalogId).toBe('gen3-items');
+  });
+
+  it('renders amount as a bounded number field (1-65535)', () => {
+    const amount = preset.fields.find((f) => f.variableName === 'amount')!;
+    expect(amount.type).toBe('number');
+    expect(amount.min).toBe(1);
+    expect(amount.max).toBe(65535);
+  });
+
+  it('renders inaccurate_emu as the shared boolean-set-clear bounded control (0/1)', () => {
+    const toggle = preset.fields.find((f) => f.variableName === 'inaccurate_emu')!;
+    expect(toggle.type).toBe('select');
+    expect(toggle.options?.map((o) => o.value)).toEqual(['0', '1']);
+  });
+
+  it('end-to-end: filling preserves the "?" marker syntax and writes bare numeric tokens only', () => {
+    // Harmless, invented toy fixture matching GetAnyItem.txt's real shape.
+    const toyScript = ['inaccurate_emu = 0', 'amount = 999', 'item_index ? = 1 @input:item', '@@', 'PretendBodyLine'].join('\n');
+    const schema = buildCuratedSchemaFromPreset(preset, { id: 'script-1', filename: 'GetAnyItem.txt' });
+    const result = fillScriptFromSchema(toyScript, schema, { item_index: 13, amount: 5, inaccurate_emu: '1' });
+    expect(result.errors).toEqual([]);
+    expect(result.filledScriptText).toContain('item_index ? = 13 @input:item');
+    expect(result.filledScriptText).toContain('amount = 5');
+    expect(result.filledScriptText).toContain('inaccurate_emu = 1');
+    expect(result.filledScriptText).not.toContain('Potion');
+  });
+});

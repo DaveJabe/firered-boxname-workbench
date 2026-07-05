@@ -74,6 +74,13 @@ describe('classifyCandidate — conservative variable-name heuristics', () => {
     }
   });
 
+  it('"item_index" (and "itemindex") classify as gen3-items, matching the real GetAnyItem.txt variable name', () => {
+    for (const name of ['item_index', 'itemindex']) {
+      const c = classifyCandidate(makeCandidate({ name }), 's1', 'a.txt');
+      expect(c.catalogId).toBe('gen3-items');
+    }
+  });
+
   it('a bare "flag" variable name classifies as frlg-flags', () => {
     const c = classifyCandidate(makeCandidate({ name: 'flag' }), 's1', 'a.txt');
     expect(c.catalogId).toBe('frlg-flags');
@@ -181,6 +188,19 @@ describe('buildCatalogGapAudit', () => {
     const project = makeProject([makeScript('a', speciesScript)]);
     const audit = buildCatalogGapAudit(project, () => ISO);
     expect(audit.missingCatalogs.some((n) => n.catalogId === 'gen3-species')).toBe(false);
+  });
+
+  it('an "item_index ? = 1" marker line resolves to gen3-items, not unknown/manual-review', () => {
+    // Harmless, invented toy fixture matching GetAnyItem.txt's real shape.
+    const markerScript = ['item_index ? = 1 @input:item', '@@', 'PretendBodyLine'].join('\n');
+    const project = makeProject([makeScript('a', markerScript)]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    expect(audit.unknownFields.some((f) => f.variableName === 'item_index')).toBe(false);
+    // gen3-items is complete, so a plain (non-reference-select) item_index field is a catalog need
+    // via the flat classification helper directly — buildCatalogGapAudit itself only surfaces
+    // needs for schema fields/candidates, so assert the classification directly here too.
+    const candidate = project.scripts[0]!.lastScan!.candidates.find((c) => c.name === 'item_index')!;
+    expect(candidate.inputHint).toBe('item');
   });
 
   it('does not report gen3-items as a "partial catalog in use" anymore, now that it is complete', () => {

@@ -263,6 +263,43 @@ describe('review case — create-pokemon-from-nothing', () => {
   });
 });
 
+describe('review case — get-any-item', () => {
+  // Harmless, invented toy fixture matching GetAnyItem.txt's real "item_index ? = 1" shape.
+  const TOY_SCRIPT = ['inaccurate_emu = 0', 'amount = 999', 'item_index ? = 1 @input:item', '@@', 'PretendBodyLine'].join('\n');
+
+  function setup() {
+    const preset = presetByActionKey('get-any-item');
+    const script = makeScript('script-item', 'GetAnyItem.txt', TOY_SCRIPT);
+    const schema = buildCuratedSchemaFromPreset(preset, script);
+    const reviewCase = baseReviewCase({
+      schemaId: schema.id,
+      actionKey: preset.actionKey,
+      scriptId: script.id,
+      scriptFilename: script.filename,
+      inputValues: { item_index: 13, amount: 5, inaccurate_emu: '1' },
+      expectedChangedVariables: ['item_index', 'amount', 'inaccurate_emu'],
+      expectedFilledAssignments: { item_index: 'item_index ? = 13 @input:item' },
+    });
+    const project = makeProject([script], [schema], [reviewCase]);
+    return { project, schema, reviewCase };
+  }
+
+  it('passes verification: all three fields change, the "?" marker syntax is handled correctly', () => {
+    const { project, schema, reviewCase } = setup();
+    const result = verifySchemaReviewCase(project, schema, reviewCase);
+    expect(result.status).toBe('passing');
+    expect(result.errors).toEqual([]);
+    expect(result.changedVariables.sort()).toEqual(['amount', 'inaccurate_emu', 'item_index']);
+  });
+
+  it('once run once, batch verification re-checks it live as passing', () => {
+    const { project, schema, reviewCase } = setup();
+    reviewCase.status = verifySchemaReviewCase(project, schema, reviewCase).status;
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results[0]!.status).toBe('passing');
+  });
+});
+
 describe('all four expansion presets together — batch verification and Run Script listing', () => {
   function setupAll(): Project {
     const wildBattlePreset = presetByActionKey('start-wild-battle-any-pokemon');

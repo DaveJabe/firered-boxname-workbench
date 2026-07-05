@@ -4,13 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
-      Strict, offline-only Content-Security-Policy.
-      connect-src 'none' blocks fetch / XMLHttpRequest / WebSocket / EventSource outright,
-      so the app cannot make any network request even if a dependency tried to.
+      Strict, local-first Content-Security-Policy.
+      connect-src allows exactly two hosts — api.github.com and
+      raw.githubusercontent.com — used only by the explicit, user-triggered
+      "Fetch E-Sh4rk scripts from GitHub" action (src/data/esharkRemote.ts).
+      Every other network primitive (XMLHttpRequest, WebSocket, EventSource)
+      is still blocked outright, and no request of any kind happens unless
+      the user clicks that button.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src https://api.github.com https://raw.githubusercontent.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     />
     <title>FireRed BoxName Workbench — local &amp; reviewable</title>
   </head>

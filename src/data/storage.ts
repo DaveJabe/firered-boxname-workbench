@@ -1,4 +1,5 @@
-// Local-only persistence. Uses IndexedDB in the browser. No network, ever.
+// Local-only persistence. Uses IndexedDB in the browser. No network I/O in
+// this file — the app's one network operation lives in ./esharkRemote.ts.
 
 import type {
   Project,
@@ -486,6 +487,12 @@ function parseScriptPack(v: unknown, i: number): ScriptPack {
       (c, ci) => asEnum(c, ESHARK_CATEGORIES, `${path}.categoriesDetected[${ci}]`),
     );
   }
+  const fetchedAt = asOptString(o.fetchedAt, `${path}.fetchedAt`);
+  if (fetchedAt !== undefined) pack.fetchedAt = fetchedAt;
+  const sourceUrl = asOptString(o.sourceUrl, `${path}.sourceUrl`);
+  if (sourceUrl !== undefined) pack.sourceUrl = sourceUrl;
+  const sourceRef = asOptString(o.sourceRef, `${path}.sourceRef`);
+  if (sourceRef !== undefined) pack.sourceRef = sourceRef;
   return pack;
 }
 

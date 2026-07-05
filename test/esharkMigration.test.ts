@@ -55,6 +55,37 @@ describe('E-Sh4rk source metadata on ScriptPack/ScriptFile', () => {
     expect(migrated.scripts[0].displayName).toBe('Example display name');
   });
 
+  it('round-trips eshark-github source metadata: fetchedAt, sourceUrl, sourceRef', () => {
+    const project = makeProject();
+    project.scripts.push({
+      id: 'sc1', filename: 'Example.txt', rawText: TOY_SCRIPT, importedAt: ISO,
+      relativePath: 'files_frlg/misc/Example.txt', packId: 'pack1', category: 'misc',
+    });
+    project.scriptPacks.push({
+      id: 'pack1',
+      name: 'E-Sh4rk scripts (GitHub @ main)',
+      importedAt: ISO,
+      defaultTarget: UNKNOWN_TARGET,
+      scriptIds: ['sc1'],
+      sourceProfile: 'eshark-github',
+      detectedRootPath: 'files_frlg',
+      hasListJson: false,
+      categoriesDetected: ['misc'],
+      fetchedAt: ISO,
+      sourceUrl: 'https://github.com/E-Sh4rk/EmeraldACE_web',
+      sourceRef: 'main',
+    });
+
+    const migrated = importProjectJson(exportProjectJson(project));
+    const pack = migrated.scriptPacks[0];
+    expect(pack.sourceProfile).toBe('eshark-github');
+    expect(pack.fetchedAt).toBe(ISO);
+    expect(pack.sourceUrl).toBe('https://github.com/E-Sh4rk/EmeraldACE_web');
+    expect(pack.sourceRef).toBe('main');
+    // Target metadata (the user's selection, same as any other pack) round-trips too.
+    expect(pack.defaultTarget).toEqual(UNKNOWN_TARGET);
+  });
+
   it('never stores an absolute filesystem path in detectedRootPath', () => {
     const project = makeProject();
     project.scriptPacks.push({

@@ -4,7 +4,9 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: './',
   server: {
-    // Bind to localhost only; this app makes no outbound requests.
+    // Dev server accepts local connections only. The app's own only outbound
+    // request is the explicit, user-triggered E-Sh4rk GitHub fetch — see
+    // src/data/esharkRemote.ts — never anything automatic.
     host: '127.0.0.1',
     port: 5175,
     strictPort: false,

@@ -410,8 +410,11 @@ export interface ScriptFile {
 /** Recognized E-Sh4rk `files_frlg` subfolder a script was imported from. */
 export type EsharkCategory = 'misc' | 'pkmn' | 'rng';
 
-/** Which local E-Sh4rk folder layout a script pack was detected from. See core/esharkSource.ts. */
-export type EsharkSourceProfile = 'eshark-files-frlg' | 'eshark-offline-app';
+/**
+ * Which E-Sh4rk folder layout (or the explicit GitHub fetch) a script pack
+ * was sourced from. See core/esharkSource.ts and data/esharkRemote.ts.
+ */
+export type EsharkSourceProfile = 'eshark-files-frlg' | 'eshark-offline-app' | 'eshark-github';
 
 // --- Script packs (batch "import script folder") ----------------------------
 //
@@ -438,6 +441,12 @@ export interface ScriptPack {
   hasListJson?: boolean;
   /** Which files_frlg subfolders (misc/pkmn/rng) were detected among the imported scripts. */
   categoriesDetected?: readonly EsharkCategory[];
+  /** When this pack was fetched over the network, for sourceProfile 'eshark-github' only. */
+  fetchedAt?: string;
+  /** The repository URL scripts were fetched from, for sourceProfile 'eshark-github' only. */
+  sourceUrl?: string;
+  /** The branch/tag/commit ref that was fetched, if known. */
+  sourceRef?: string;
 }
 
 // --- Curated action schemas (mock mode only) --------------------------------

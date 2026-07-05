@@ -7,7 +7,7 @@ import {
   parseEsharkListEntries,
   lookupEsharkListEntry,
   SOURCE_PROFILE_INFO,
-  ESHARK_SOURCE_PROFILES,
+  LOCAL_ESHARK_SOURCE_PROFILES,
 } from '../src/core/esharkSource.js';
 import type { CollectedFile } from '../src/core/scriptPack.js';
 
@@ -144,7 +144,7 @@ describe('parseEsharkListEntries', () => {
 
 describe('SOURCE_PROFILE_INFO', () => {
   it('has a plain-language label and description for every profile, including generic', () => {
-    for (const profile of ['generic', ...ESHARK_SOURCE_PROFILES] as const) {
+    for (const profile of ['generic', ...LOCAL_ESHARK_SOURCE_PROFILES] as const) {
       expect(SOURCE_PROFILE_INFO[profile].label.length).toBeGreaterThan(0);
       expect(SOURCE_PROFILE_INFO[profile].description.length).toBeGreaterThan(0);
     }

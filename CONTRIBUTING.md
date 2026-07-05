@@ -15,8 +15,15 @@ be rejected regardless of how convenient the feature seems.
   routes, setups, or techniques.
 - **No new exploit research** — only known, already-documented techniques the
   user brings to the app (via a template or imported text) are in scope.
-- **No network calls** — no `fetch`/XHR/WebSocket/EventSource/sendBeacon,
-  remote assets, telemetry, or analytics.
+- **No hidden network calls** — no XHR/WebSocket/EventSource/sendBeacon, no
+  telemetry or analytics, no auto-fetch on launch, and no arbitrary URL
+  fetching. `fetch` itself is allowed in exactly one place —
+  `src/data/esharkRemote.ts` — for the explicit, user-triggered "Fetch
+  E-Sh4rk scripts from GitHub" action, which only ever contacts
+  `api.github.com`/`raw.githubusercontent.com` for the public `files_frlg`
+  folder and never runs a generator. Do not add `fetch` (or any other
+  network primitive) anywhere else, and do not widen what that one module
+  fetches without updating this document and `scripts/check-no-network.mjs`.
 - **No hidden or background execution** — every action is user-triggered and
   visible; nothing runs silently, on a timer, or without the user seeing it.
 - **No ROM, save-file, or emulator handling**, unless explicitly added in a
@@ -37,9 +44,11 @@ be rejected regardless of how convenient the feature seems.
 - Keep the validators in `src/core/validators.ts` **pure**: functions of their
   inputs that return `Finding[]`, never mutating inputs and never emitting
   content. The purity/determinism tests in `test/validators.test.ts` guard this.
-- Stay **offline**: no `fetch` / `XMLHttpRequest` / `WebSocket` / `EventSource`
-  / `sendBeacon`, no remote assets, no telemetry. `npm run audit:network` and
-  the CSP in `index.html` enforce this.
+- Stay **local-first with no hidden network calls**: no `XMLHttpRequest` /
+  `WebSocket` / `EventSource` / `sendBeacon` anywhere, no telemetry, no
+  auto-fetch, no arbitrary URL fetching. `fetch` exists only in
+  `src/data/esharkRemote.ts`, gated behind an explicit user click.
+  `npm run audit:network` and the CSP in `index.html` enforce this.
 - Keep the runtime dependency count at **zero**. New dev dependencies should be
   rare and justified.
 

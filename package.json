@@ -2,7 +2,7 @@
   "name": "firered-boxname-workbench",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first personal workbench for known FireRed box-name techniques: templates, script input, box-name output, and provenance, reviewed and exported locally with no network calls.",
+  "description": "Local-first personal workbench for known FireRed box-name techniques: templates, script input, box-name output, and provenance, reviewed and exported locally with no hidden network calls.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,6 +14,7 @@
     "audit:network": "node scripts/check-no-network.mjs"
   },
   "devDependencies": {
+    "@types/node": "^22.20.0",
     "typescript": "^6.0.3",
     "vite": "^8.1.3",
     "vitest": "^4.1.9"

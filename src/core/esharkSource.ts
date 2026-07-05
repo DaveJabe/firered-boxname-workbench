@@ -11,10 +11,20 @@
 import type { EsharkCategory, EsharkSourceProfile } from './types.js';
 import type { CollectedFile } from './scriptPack.js';
 
-export const ESHARK_SOURCE_PROFILES: readonly EsharkSourceProfile[] = ['eshark-files-frlg', 'eshark-offline-app'];
+/** Every valid ScriptPack.sourceProfile value — used for storage validation. */
+export const ESHARK_SOURCE_PROFILES: readonly EsharkSourceProfile[] = [
+  'eshark-files-frlg',
+  'eshark-offline-app',
+  'eshark-github',
+];
 
-/** The folder-import source profile the user picks; 'generic' means no special layout is assumed. */
-export type SourceProfile = 'generic' | EsharkSourceProfile;
+/** The two E-Sh4rk profiles that involve picking a local folder — excludes the separate GitHub fetch action. */
+export type LocalEsharkSourceProfile = Exclude<EsharkSourceProfile, 'eshark-github'>;
+
+export const LOCAL_ESHARK_SOURCE_PROFILES: readonly LocalEsharkSourceProfile[] = ['eshark-files-frlg', 'eshark-offline-app'];
+
+/** The local-folder-import source profile the user picks; 'generic' means no special layout is assumed. */
+export type SourceProfile = 'generic' | LocalEsharkSourceProfile;
 
 export const ESHARK_CATEGORIES: readonly EsharkCategory[] = ['misc', 'pkmn', 'rng'];
 
@@ -48,6 +58,13 @@ export const SOURCE_PROFILE_INFO: Record<SourceProfile, SourceProfileInfo> = {
 export const ESHARK_SETUP_NOTE =
   'To use E-Sh4rk scripts, download or clone the E-Sh4rk script repository/offline generator locally, ' +
   'then select the local files_frlg folder or the offline app folder. This app does not fetch scripts from the internet.';
+
+const ESHARK_GITHUB_LABEL = 'Fetched from GitHub (E-Sh4rk)';
+
+/** Display label covering all three ScriptPack.sourceProfile values, including the GitHub-sourced one, which is not part of the local-folder picker. */
+export function esharkSourceProfileLabel(profile: EsharkSourceProfile): string {
+  return profile === 'eshark-github' ? ESHARK_GITHUB_LABEL : SOURCE_PROFILE_INFO[profile].label;
+}
 
 function normalizePath(relativePath: string): string {
   return relativePath.replace(/\\/g, '/');

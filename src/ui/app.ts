@@ -18,6 +18,7 @@ import type {
   ParsedGeneratorOutput,
   GameTarget,
   EsharkCategory,
+  EsharkSourceProfile,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -68,13 +69,15 @@ import {
 import {
   SOURCE_PROFILE_INFO,
   ESHARK_SETUP_NOTE,
-  ESHARK_SOURCE_PROFILES,
+  LOCAL_ESHARK_SOURCE_PROFILES,
   selectEsharkFiles,
   displayRootPath,
   parseEsharkListEntries,
   lookupEsharkListEntry,
+  esharkSourceProfileLabel,
   type SourceProfile,
 } from '../core/esharkSource.js';
+import { fetchEsharkFilesFrlg, ESHARK_GITHUB_REPO_URL, EsharkFetchError } from '../data/esharkRemote.js';
 import { DEMO_PROJECT_JSON } from '../fixtures/demoProject.js';
 import {
   listProjects,
@@ -341,6 +344,8 @@ const state: {
   pendingPackTargetNotes: string;
   /** Manage Scripts: which folder layout to assume for the next imported script folder. */
   pendingSourceProfile: SourceProfile;
+  /** Manage Scripts: whether the explicit GitHub fetch is in flight (disables the button, shows progress). */
+  esharkFetchInProgress: boolean;
 } = {
   screen: 'actions',
   summaries: [],
@@ -358,6 +363,7 @@ const state: {
   pendingPackTarget: UNKNOWN_TARGET,
   pendingPackTargetNotes: '',
   pendingSourceProfile: 'generic',
+  esharkFetchInProgress: false,
 };
 
 const uid = () => crypto.randomUUID();
@@ -411,7 +417,7 @@ function targetSelectsHtml(bindPrefix: string, target: GameTarget, idPrefix: str
   <select id="${idPrefix}-rev" data-bind="${bindPrefix}.revision">${revOpts}</select>`;
 }
 
-const SOURCE_PROFILE_OPTIONS: readonly SourceProfile[] = ['generic', ...ESHARK_SOURCE_PROFILES];
+const SOURCE_PROFILE_OPTIONS: readonly SourceProfile[] = ['generic', ...LOCAL_ESHARK_SOURCE_PROFILES];
 
 /** Source-profile selector for folder import, with a plain-language explanation of the selected option. */
 function sourceProfileSelectHtml(): string {
@@ -461,7 +467,7 @@ function topbar(): string {
 
 function layout(content: string): string {
   return `<a href="#main" class="skip">Skip to content</a>
-    <div class="banner">Local &amp; reviewable — no network calls, no hidden execution. Existing local scripts/generators are the source of truth; this app prepares input, reviews output, and keeps provenance.</div>
+    <div class="banner">Local &amp; reviewable — no hidden network calls, no hidden execution. Network access only occurs when you explicitly fetch E-Sh4rk scripts; no generator is run by fetching them. Existing local scripts/generators are the source of truth; this app prepares input, reviews output, and keeps provenance.</div>
     ${topbar()}
     <div class="shell">${navRail()}<main id="main" tabindex="-1">${content}</main></div>`;
 }
@@ -543,7 +549,7 @@ function renderLanding(): string {
 function renderStartHere(): string {
   const p = state.project!;
   return `<h1>Orientation</h1>
-    <p class="muted">A quick orientation for this workspace. Everything here stays local — no network calls, nothing runs in the background.</p>
+    <p class="muted">A quick orientation for this workspace. Everything here stays local by default — no hidden network calls, nothing runs in the background. The one exception is the explicit "Fetch E-Sh4rk scripts from GitHub" button in Manage Scripts, which only ever runs when you click it.</p>
     <div class="grid2">
       <div class="card">
         <h3>Run Script</h3>
@@ -1188,9 +1194,11 @@ function scriptPackCard(pack: ScriptPack, scripts: readonly ScriptFile[]): strin
   const unscanned = packScripts.filter((s) => !s.lastScan).length;
   const esharkInfo = pack.sourceProfile
     ? `<p class="muted">
-        Source: ${escapeHtml(SOURCE_PROFILE_INFO[pack.sourceProfile].label)}${pack.detectedRootPath ? ` · detected at "${escapeHtml(pack.detectedRootPath)}"` : ''}
+        Source: ${escapeHtml(esharkSourceProfileLabel(pack.sourceProfile))}${pack.detectedRootPath ? ` · detected at "${escapeHtml(pack.detectedRootPath)}"` : ''}
         · list.json ${pack.hasListJson ? 'found' : 'not found'}
         ${pack.categoriesDetected && pack.categoriesDetected.length > 0 ? '· categories: ' + pack.categoriesDetected.map(escapeHtml).join(', ') : ''}
+        ${pack.sourceUrl ? `· fetched from ${escapeHtml(pack.sourceUrl)}${pack.sourceRef ? ` @ ${escapeHtml(pack.sourceRef)}` : ''}` : ''}
+        ${pack.fetchedAt ? `· fetched ${escapeHtml(pack.fetchedAt)}` : ''}
       </p>`
     : '';
   return `<div class="card ext-tool">
@@ -1290,6 +1298,23 @@ function renderScripts(): string {
         <button class="btn" data-action="import-script-folder">Import script folder</button>
       </div>
       <input type="file" webkitdirectory multiple data-action="script-folder-file" id="script-folder-input" style="display:none" aria-label="Import script folder" />
+    </div>
+    <div class="card">
+      <h3>Fetch E-Sh4rk scripts from GitHub</h3>
+      <p class="muted">
+        This performs a network request to GitHub, and only when you click the button below —
+        nothing is fetched automatically, on launch, or in the background. Fetched files are
+        imported as plain text, the same as a local folder import; no generator is run by
+        fetching scripts, and fetched scripts are stored locally afterward.
+      </p>
+      <p class="muted">Source: <code>${escapeHtml(ESHARK_GITHUB_REPO_URL)}</code> (public, read-only) — <code>files_frlg/</code> only.</p>
+      <p class="muted">Set the target for the fetched scripts — leave Unknown/Mixed if you're not sure. Each script can override this individually later.</p>
+      ${targetSelectsHtml('pendingPackTarget', state.pendingPackTarget, 'pending-pack-target-github')}
+      <label for="pending-pack-target-notes-github">Target notes (optional)</label>
+      <input type="text" id="pending-pack-target-notes-github" data-bind="pendingPackTargetNotes" value="${attr(state.pendingPackTargetNotes)}" placeholder="e.g. source, caveats" />
+      <div class="row" style="margin-top:0.5rem">
+        <button class="btn" data-action="fetch-eshark-github"${state.esharkFetchInProgress ? ' disabled' : ''}>${state.esharkFetchInProgress ? 'Fetching from GitHub…' : 'Fetch E-Sh4rk scripts from GitHub'}</button>
+      </div>
     </div>`;
 }
 
@@ -1612,6 +1637,7 @@ function resetViewState(project: Project): void {
   state.pendingPackTarget = UNKNOWN_TARGET;
   state.pendingPackTargetNotes = '';
   state.pendingSourceProfile = 'generic';
+  state.esharkFetchInProgress = false;
 }
 
 /**
@@ -1920,6 +1946,9 @@ async function handleClick(e: Event): Promise<void> {
       break;
     case 'import-script-folder':
       (document.getElementById('script-folder-input') as HTMLInputElement | null)?.click();
+      break;
+    case 'fetch-eshark-github':
+      void handleFetchEsharkGithub();
       break;
     case 'remove-script':
       if (p && id) {
@@ -2381,40 +2410,29 @@ async function handleScriptFile(input: HTMLInputElement): Promise<void> {
 /** Reads only .txt scripts and recognized metadata files (e.g. list.json) out
  *  of a directory-picker selection — never fetched, never executed, no
  *  particular folder layout required. */
-async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
-  const files = Array.from(input.files ?? []);
-  input.value = '';
-  const p = state.project;
-  if (!files.length || !p) return;
+interface EsharkPackSource {
+  sourceProfile: EsharkSourceProfile;
+  packName: string;
+  detectedRootPath: string;
+  sourceUrl?: string;
+  sourceRef?: string;
+  fetchedAt?: string;
+}
 
-  const allCollected: CollectedFile[] = [];
-  for (const file of files) {
-    const relativePath = file.webkitRelativePath || file.name;
-    if (!isRelevantPackFile(relativePath)) continue;
-    const text = await readFileText(file);
-    allCollected.push({ relativePath, text });
-  }
-
-  const profile = state.pendingSourceProfile;
-  let collected = allCollected;
-  let detectedRoot: string | undefined;
-  if (profile !== 'generic') {
-    const selection = selectEsharkFiles(allCollected);
-    if (!selection) {
-      window.alert(
-        'No files_frlg folder was found in that selection. Select the files_frlg folder itself, or a folder that contains it (like the offline app or repo folder), then try again.',
-      );
-      return;
-    }
-    detectedRoot = selection.root;
-    collected = selection.files;
-  }
-
-  const { scripts, metadata, hasMetadataFile, metadataParseError } = collectScriptPackFiles(collected);
-  if (scripts.length === 0) {
-    window.alert('No .txt scripts found in that folder.');
-    return;
-  }
+/**
+ * Shared by local E-Sh4rk folder import and the GitHub fetch: turns
+ * already-root-filtered CollectedFile[] into ScriptFile[] (pushed onto the
+ * project) plus one ScriptPack carrying E-Sh4rk source metadata. Returns
+ * null when no .txt scripts were found among the given files — callers
+ * decide how to report that. Never mutates rawText.
+ */
+function importEsharkFiles(
+  p: Project,
+  filesUnderRoot: readonly CollectedFile[],
+  source: EsharkPackSource,
+): { scriptCount: number; hasMetadataFile: boolean; metadataParseError: boolean } | null {
+  const { scripts, metadata, hasMetadataFile, metadataParseError } = collectScriptPackFiles(filesUnderRoot);
+  if (scripts.length === 0) return null;
   const listEntries = parseEsharkListEntries(metadata);
 
   const now = nowIso();
@@ -2432,17 +2450,100 @@ async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
       relativePath: cs.relativePath,
       packId,
     };
-    if (profile !== 'generic') {
-      if (cs.category) {
-        scriptFile.category = cs.category;
-        categoriesDetected.add(cs.category);
-      }
-      const listEntry = lookupEsharkListEntry(listEntries, cs.filename);
-      if (listEntry?.displayName) scriptFile.displayName = listEntry.displayName;
+    if (cs.category) {
+      scriptFile.category = cs.category;
+      categoriesDetected.add(cs.category);
     }
+    const listEntry = lookupEsharkListEntry(listEntries, cs.filename);
+    if (listEntry?.displayName) scriptFile.displayName = listEntry.displayName;
     p.scripts.push(scriptFile);
   }
-  const sourceFolderName = detectSourceFolderName(collected);
+
+  const pack: ScriptPack = {
+    id: packId,
+    name: source.packName,
+    importedAt: now,
+    defaultTarget: state.pendingPackTarget,
+    scriptIds,
+    sourceProfile: source.sourceProfile,
+    detectedRootPath: source.detectedRootPath,
+    hasListJson: hasMetadataFile,
+    categoriesDetected: Array.from(categoriesDetected).sort(),
+  };
+  const targetNotes = state.pendingPackTargetNotes.trim();
+  if (targetNotes) pack.targetNotes = targetNotes;
+  if (source.sourceUrl) pack.sourceUrl = source.sourceUrl;
+  if (source.sourceRef) pack.sourceRef = source.sourceRef;
+  if (source.fetchedAt) pack.fetchedAt = source.fetchedAt;
+  p.scriptPacks.push(pack);
+
+  return { scriptCount: scripts.length, hasMetadataFile, metadataParseError };
+}
+
+async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  const p = state.project;
+  if (!files.length || !p) return;
+
+  const allCollected: CollectedFile[] = [];
+  for (const file of files) {
+    const relativePath = file.webkitRelativePath || file.name;
+    if (!isRelevantPackFile(relativePath)) continue;
+    const text = await readFileText(file);
+    allCollected.push({ relativePath, text });
+  }
+
+  const profile = state.pendingSourceProfile;
+
+  if (profile !== 'generic') {
+    const selection = selectEsharkFiles(allCollected);
+    if (!selection) {
+      window.alert(
+        'No files_frlg folder was found in that selection. Select the files_frlg folder itself, or a folder that contains it (like the offline app or repo folder), then try again.',
+      );
+      return;
+    }
+    const sourceFolderName = detectSourceFolderName(selection.files);
+    const imported = importEsharkFiles(p, selection.files, {
+      sourceProfile: profile,
+      packName: sourceFolderName ?? `Script pack (${nowIso().slice(0, 10)})`,
+      detectedRootPath: displayRootPath(selection.root),
+    });
+    if (!imported) {
+      window.alert('No .txt scripts found in that folder.');
+      return;
+    }
+    commit();
+    if (imported.hasMetadataFile && imported.metadataParseError) {
+      window.alert('list.json was found but could not be parsed as JSON — it was ignored. Scripts still imported normally.');
+    }
+    return;
+  }
+
+  const { scripts } = collectScriptPackFiles(allCollected);
+  if (scripts.length === 0) {
+    window.alert('No .txt scripts found in that folder.');
+    return;
+  }
+
+  const now = nowIso();
+  const packId = uid();
+  const scriptIds: string[] = [];
+  for (const cs of scripts) {
+    const scriptId = uid();
+    scriptIds.push(scriptId);
+    const scriptFile: ScriptFile = {
+      id: scriptId,
+      filename: cs.filename,
+      rawText: cs.rawText,
+      importedAt: now,
+      relativePath: cs.relativePath,
+      packId,
+    };
+    p.scripts.push(scriptFile);
+  }
+  const sourceFolderName = detectSourceFolderName(allCollected);
   const pack: ScriptPack = {
     id: packId,
     name: sourceFolderName ?? `Script pack (${now.slice(0, 10)})`,
@@ -2453,17 +2554,49 @@ async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
   if (sourceFolderName) pack.sourceFolderName = sourceFolderName;
   const targetNotes = state.pendingPackTargetNotes.trim();
   if (targetNotes) pack.targetNotes = targetNotes;
-  if (profile !== 'generic') {
-    pack.sourceProfile = profile;
-    pack.detectedRootPath = displayRootPath(detectedRoot!);
-    pack.hasListJson = hasMetadataFile;
-    pack.categoriesDetected = Array.from(categoriesDetected).sort();
-  }
   p.scriptPacks.push(pack);
   commit();
+}
 
-  if (profile !== 'generic' && hasMetadataFile && metadataParseError) {
-    window.alert('list.json was found but could not be parsed as JSON — it was ignored. Scripts still imported normally.');
+/**
+ * The one function in the UI layer allowed to trigger a network request —
+ * and only ever from this exact click handler, never from render() or app
+ * init. Fetches read-only script text from GitHub and feeds it through the
+ * same importEsharkFiles() pipeline as a local E-Sh4rk folder import.
+ */
+async function handleFetchEsharkGithub(): Promise<void> {
+  const p = state.project;
+  if (!p || state.esharkFetchInProgress) return;
+  state.esharkFetchInProgress = true;
+  render();
+
+  try {
+    const result = await fetchEsharkFilesFrlg();
+    state.esharkFetchInProgress = false;
+    const imported = importEsharkFiles(p, result.files, {
+      sourceProfile: 'eshark-github',
+      packName: `E-Sh4rk scripts (GitHub @ ${result.ref})`,
+      detectedRootPath: displayRootPath(result.root),
+      sourceUrl: result.sourceUrl,
+      sourceRef: result.ref,
+      fetchedAt: nowIso(),
+    });
+    if (!imported) {
+      render();
+      window.alert('No .txt scripts were found in the fetched files_frlg folder.');
+      return;
+    }
+    commit();
+    if (imported.hasMetadataFile && imported.metadataParseError) {
+      window.alert('list.json was found but could not be parsed as JSON — it was ignored. Scripts still imported normally.');
+    }
+    window.alert(
+      `Fetched ${imported.scriptCount} script(s) from GitHub. No generator was run — scripts were imported as plain text and stored locally.`,
+    );
+  } catch (err) {
+    state.esharkFetchInProgress = false;
+    render();
+    window.alert(err instanceof EsharkFetchError ? `Fetch failed: ${err.message}` : 'Fetch failed: could not reach GitHub.');
   }
 }
 

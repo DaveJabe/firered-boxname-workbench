@@ -14,10 +14,12 @@ import type { ReferenceCatalogId } from './types.js';
 export type { ReferenceCatalogId };
 
 export interface ReferenceEntry {
-  /** The numeric value a script actually uses (item/move index, etc.) — this is what gets stored/filled, never the display name. */
+  /** The numeric value a script actually uses (item/move index, species internal index, etc.) — this is what gets stored/filled, never the display name. */
   value: number;
   /** Hex form of value, e.g. "0x145", for display/cross-reference only. */
   hex?: string;
+  /** National Pokédex number, for species entries where it's known and (for Generation III) may differ from the internal index — display/cross-reference only, never stored/filled. */
+  nationalDexNumber?: number;
   name: string;
   /** Category/bag pocket, if known (e.g. "Poké Balls", "TMs & HMs" for items; "Physical"/"Special"/"Status" for moves) — informational only. */
   category?: string;

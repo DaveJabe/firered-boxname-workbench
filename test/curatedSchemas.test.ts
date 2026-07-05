@@ -22,7 +22,7 @@ import {
   NPC_FIELD_OPTIONS,
 } from '../src/core/curatedSchemas.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
-import { GEN3_ITEMS_CATALOG, GEN3_MOVES_CATALOG } from '../src/reference/index.js';
+import { GEN3_ITEMS_CATALOG, GEN3_MOVES_CATALOG, GEN3_SPECIES_CATALOG } from '../src/reference/index.js';
 import {
   importProjectJson,
   exportProjectJson,
@@ -589,6 +589,32 @@ describe('toActionTemplateShape — reference-select fields resolve options from
     for (const option of options) {
       expect(option.value).toMatch(/^\d+$/);
     }
+  });
+
+  it('resolves options from the gen3-species catalog for a reference-select field', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Species', label: 'Species', type: 'reference-select', required: false, variableName: 'Species', referenceCatalogId: 'gen3-species' },
+      ],
+    });
+    const template = toActionTemplateShape(schema);
+    expect(template.fields[0].options?.some((o) => o.value === '1' && o.label === 'Bulbasaur — 1')).toBe(true);
+  });
+
+  it('every resolved gen3-species option writes a numeric (internal index) value string only, never the display name or National Dex number', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Species', label: 'Species', type: 'reference-select', required: false, variableName: 'Species', referenceCatalogId: 'gen3-species' },
+      ],
+    });
+    const options = toActionTemplateShape(schema).fields[0].options ?? [];
+    expect(options).toHaveLength(GEN3_SPECIES_CATALOG.entries.length);
+    for (const option of options) {
+      expect(option.value).toMatch(/^\d+$/);
+    }
+    // Treecko's internal index (277) is used, never its National Dex number (252).
+    const treecko = options.find((o) => o.label.startsWith('Treecko'));
+    expect(treecko?.value).toBe('277');
   });
 
   it('falls back to any hand-set options rather than crashing when referenceCatalogId is missing', () => {

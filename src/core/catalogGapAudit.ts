@@ -68,7 +68,7 @@ interface NameHeuristicRule {
 const NAME_HEURISTIC_RULES: readonly NameHeuristicRule[] = [
   { pattern: /^(item|itemid|helditem)$/i, catalogId: 'gen3-items', confidence: 'medium', reason: 'Variable name suggests an item value.' },
   { pattern: /^(move|moveid)$/i, catalogId: 'gen3-moves', confidence: 'medium', reason: 'Variable name suggests a move value.' },
-  { pattern: /^(species|pokemon|mon)$/i, catalogId: 'gen3-species', confidence: 'medium', reason: 'Variable name suggests a species value.' },
+  { pattern: /^(species|pokemon|mon|pokemonid|speciesid)$/i, catalogId: 'gen3-species', confidence: 'medium', reason: 'Variable name suggests a species value.' },
   { pattern: /^ability$/i, catalogId: 'gen3-abilities', confidence: 'medium', reason: 'Variable name suggests an ability value.' },
   { pattern: /^nature$/i, catalogId: 'gen3-natures', confidence: 'medium', reason: 'Variable name suggests a nature value.' },
   { pattern: /^type$/i, catalogId: 'gen3-types', confidence: 'medium', reason: 'Variable name suggests a type value.' },

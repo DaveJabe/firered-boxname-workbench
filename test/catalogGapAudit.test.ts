@@ -55,18 +55,23 @@ describe('classifyCandidate — annotation hints (highest confidence)', () => {
     expect(c.confidence).toBe('high');
   });
 
-  it('@input:species classifies as gen3-species (a stub catalog) — kind is reference-catalog-needed', () => {
+  it('@input:species classifies as needing/using gen3-species', () => {
     const c = classifyCandidate(makeCandidate({ name: 'target', inputHint: 'species' }), 's1', 'a.txt');
     expect(c.catalogId).toBe('gen3-species');
-    expect(c.kind).toBe('reference-catalog-needed');
+  });
+
+  it('@input:pokemon classifies as needing/using gen3-species', () => {
+    const c = classifyCandidate(makeCandidate({ name: 'target', inputHint: 'pokemon' }), 's1', 'a.txt');
+    expect(c.catalogId).toBe('gen3-species');
   });
 });
 
 describe('classifyCandidate — conservative variable-name heuristics', () => {
-  it('a bare "species" variable name classifies as gen3-species', () => {
-    const c = classifyCandidate(makeCandidate({ name: 'species' }), 's1', 'a.txt');
-    expect(c.catalogId).toBe('gen3-species');
-    expect(c.kind).toBe('reference-catalog-needed');
+  it('"species"/"pokemon"/"mon"/"pokemonId"/"speciesId" all classify as gen3-species', () => {
+    for (const name of ['species', 'pokemon', 'mon', 'pokemonId', 'speciesId']) {
+      const c = classifyCandidate(makeCandidate({ name }), 's1', 'a.txt');
+      expect(c.catalogId).toBe('gen3-species');
+    }
   });
 
   it('a bare "flag" variable name classifies as frlg-flags', () => {
@@ -130,6 +135,17 @@ describe('findStaleSchemaFields', () => {
     expect(findings[0]!.classification.catalogId).toBe('gen3-moves');
   });
 
+  it('a species field still using plain text/number is flagged as stale, suggesting reference-select', () => {
+    const schema = makeSchema({
+      fields: [{ key: 'species', label: 'Species', type: 'number', required: false, variableName: 'species' }],
+    });
+    const project = makeProject([], [schema]);
+    const findings = findStaleSchemaFields(project);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.classification.catalogId).toBe('gen3-species');
+    expect(findings[0]!.suggestedType).toBe('reference-select');
+  });
+
   it('a field already correctly reference-select for the matching catalog is not flagged', () => {
     const schema = makeSchema({
       fields: [{ key: 'move', label: 'Move', type: 'reference-select', required: false, variableName: 'move', referenceCatalogId: 'gen3-moves' }],
@@ -146,16 +162,25 @@ describe('findStaleSchemaFields', () => {
 
 // Harmless, invented toy fixtures — no real script, item ID, address, or payload byte.
 const ITEM_SCRIPT = ['heldItem = 5', '@@', 'PretendBodyLine'].join('\n');
-const SPECIES_SCRIPT = ['species = 1', '@@', 'PretendBodyLine'].join('\n');
+// gen3-species is now complete (see reference/gen3Species.ts) — frlg-flags remains
+// a genuine stub, so it's used here wherever a fixture needs a still-missing catalog.
+const FLAG_SCRIPT = ['flag = 1', '@@', 'PretendBodyLine'].join('\n');
 const UNKNOWN_SCRIPT = ['someTotallyMadeUpThing = 1', '@@', 'PretendBodyLine'].join('\n');
 
 describe('buildCatalogGapAudit', () => {
   it('reports a missing (stub, zero-entry) catalog suggested by scanned candidates', () => {
-    const project = makeProject([makeScript('a', SPECIES_SCRIPT)]);
+    const project = makeProject([makeScript('a', FLAG_SCRIPT)]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const need = audit.missingCatalogs.find((n) => n.catalogId === 'gen3-species');
+    const need = audit.missingCatalogs.find((n) => n.catalogId === 'frlg-flags');
     expect(need).toBeDefined();
     expect(need!.suggestedByFields.length).toBeGreaterThan(0);
+  });
+
+  it('no longer reports gen3-species as a missing catalog, now that it is complete', () => {
+    const speciesScript = ['species = 1', '@@', 'PretendBodyLine'].join('\n');
+    const project = makeProject([makeScript('a', speciesScript)]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    expect(audit.missingCatalogs.some((n) => n.catalogId === 'gen3-species')).toBe(false);
   });
 
   it('does not report gen3-items as a "partial catalog in use" anymore, now that it is complete', () => {
@@ -304,10 +329,11 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     const script = makeScript('a', ITEM_SCRIPT);
     const schema = makeVariantSchema({
       fields: [
-        // gen3-items is now complete -> a plain-text heldItem field is a stale field, not a catalog need.
+        // gen3-items and gen3-species are now both complete -> plain-text fields are stale fields, not catalog needs.
         { key: 'heldItem', label: 'Held item', type: 'text', required: false, variableName: 'heldItem' },
-        // gen3-species is still a stub (zero-entry) catalog -> a genuine catalog need.
         { key: 'species', label: 'Species', type: 'text', required: false, variableName: 'species' },
+        // frlg-flags is still a stub (zero-entry) catalog -> a genuine catalog need.
+        { key: 'flag', label: 'Flag', type: 'text', required: false, variableName: 'flag' },
       ],
     });
     const project = makeProject([script], [schema]);
@@ -315,8 +341,9 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     const grouped = groupCatalogAuditBySupportedAction(project, audit);
 
     const variant = grouped.readyActions[0]!.variants[0]!;
-    expect(variant.catalogNeeds.some((c) => c.catalogId === 'gen3-species')).toBe(true);
+    expect(variant.catalogNeeds.some((c) => c.catalogId === 'frlg-flags')).toBe(true);
     expect(variant.staleFieldRepairs.some((f) => f.classification.catalogId === 'gen3-items')).toBe(true);
+    expect(variant.staleFieldRepairs.some((f) => f.classification.catalogId === 'gen3-species')).toBe(true);
     expect(grouped.variantsWithGaps.some((v) => v.schemaId === schema.id)).toBe(true);
   });
 
@@ -379,13 +406,13 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
   });
 
   it('a script with no curated schema at all is grouped under unsupportedScripts, with its own candidate-level catalog needs', () => {
-    const project = makeProject([makeScript('a', SPECIES_SCRIPT)]);
+    const project = makeProject([makeScript('a', FLAG_SCRIPT)]);
     const audit = buildCatalogGapAudit(project, () => ISO);
     const grouped = groupCatalogAuditBySupportedAction(project, audit);
 
     expect(grouped.unsupportedScripts).toHaveLength(1);
     expect(grouped.unsupportedScripts[0]!.scriptFilename).toBe('a.txt');
-    expect(grouped.unsupportedScripts[0]!.catalogNeeds.some((c) => c.catalogId === 'gen3-species')).toBe(true);
+    expect(grouped.unsupportedScripts[0]!.catalogNeeds.some((c) => c.catalogId === 'frlg-flags')).toBe(true);
   });
 
   it('a script that already has a curated schema is not listed under unsupportedScripts', () => {

@@ -40,5 +40,6 @@ export function createProject(
     scripts: [],
     curatedSchemas: [],
     scriptPacks: [],
+    schemaReviewCases: [],
   };
 }

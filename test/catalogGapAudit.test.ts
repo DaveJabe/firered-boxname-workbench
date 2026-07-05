@@ -345,13 +345,37 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     expect(grouped.readyActions[0]!.variants[0]!.catalogNeeds).toEqual([]);
   });
 
-  it('every variant carries a "not-available" verification-status placeholder', () => {
+  it('every variant carries a real, live verification status — "no-cases" by default, when nothing has been saved yet', () => {
     const script = makeScript('a', ITEM_SCRIPT);
     const schema = makeVariantSchema();
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
     const grouped = groupCatalogAuditBySupportedAction(project, audit);
-    expect(grouped.readyActions[0]!.variants[0]!.verificationStatus).toBe('not-available');
+    expect(grouped.readyActions[0]!.variants[0]!.verificationStatus).toBe('no-cases');
+  });
+
+  it('a variant whose schema is draft-only (not yet ready) shows "not-available" verification, not "no-cases"', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema({ status: 'draft' });
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    expect(grouped.variantsWithGaps[0]!.verificationStatus).toBe('not-available');
+  });
+
+  it('a variant with a passing review case shows "passing" verification status in the Catalog Audit, not a fixed placeholder', () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema({
+      fields: [{ key: 'heldItem', label: 'Held item', type: 'reference-select', required: false, variableName: 'heldItem', referenceCatalogId: 'gen3-items' }],
+    });
+    const project = makeProject([script], [schema]);
+    project.schemaReviewCases = [{
+      id: 'case-1', schemaId: schema.id, variantId: schema.id, scriptId: 'a', target: FR_EN_11, createdAt: ISO,
+      inputValues: { heldItem: 13 }, expectedChangedVariables: ['heldItem'], forbiddenChangedVariables: [], status: 'passing',
+    }];
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    expect(grouped.readyActions[0]!.variants[0]!.verificationStatus).toBe('passing');
   });
 
   it('a script with no curated schema at all is grouped under unsupportedScripts, with its own candidate-level catalog needs', () => {

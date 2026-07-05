@@ -13,6 +13,15 @@
 import type { ParsedBoxNameRow, ParsedGeneratorOutput } from './types.js';
 import { splitLines } from './normalize.js';
 
+/**
+ * Bumped whenever parseGeneratorOutput's line-recognition rules change in a
+ * way that could affect a previously-saved parsedBoxRows/hash comparison.
+ * Recorded as provenance on a schema review case's pasted-output snapshot
+ * (SchemaReviewCase.outputProvenance.parserVersion) — informational only,
+ * never read or compared by verifySchemaReviewCase itself.
+ */
+export const GENERATOR_OUTPUT_PARSER_VERSION = 1;
+
 // Tolerant match for a "Box N: <spaced display>   [<compact>]" line:
 //  - one or more spaces after "Box" (handles "Box  1:" and "Box 10:" alike)
 //  - the bracketed compact section is optional

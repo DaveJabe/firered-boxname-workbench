@@ -10,6 +10,7 @@
 
 import type { CuratedActionSchema, EsharkCategory, GameTarget, ScriptFile, ScriptPack, VariableCandidate } from './types.js';
 import { UNKNOWN_TARGET } from './gameTarget.js';
+import { detachCuratedSchema } from './curatedSchemas.js';
 
 // --- Collecting a folder selection into scripts + optional metadata --------
 
@@ -217,4 +218,45 @@ export function searchScriptRows(rows: readonly ScriptPackRow[], query: string):
   const q = query.trim().toLowerCase();
   if (!q) return rows.slice();
   return rows.filter((r) => r.filename.toLowerCase().includes(q) || (r.title ?? '').toLowerCase().includes(q));
+}
+
+// --- Replacing/deleting a previously-fetched E-Sh4rk GitHub pack ------------
+
+/** Script packs previously fetched from the E-Sh4rk GitHub source, most recently fetched first. */
+export function findEsharkGithubPacks(scriptPacks: readonly ScriptPack[]): ScriptPack[] {
+  return scriptPacks
+    .filter((p) => p.sourceProfile === 'eshark-github')
+    .slice()
+    .sort((a, b) => (b.fetchedAt ?? '').localeCompare(a.fetchedAt ?? ''));
+}
+
+export interface ScriptPackRemovalResult {
+  scripts: ScriptFile[];
+  curatedSchemas: CuratedActionSchema[];
+  scriptPacks: ScriptPack[];
+}
+
+/**
+ * Remove the given packs and their scripts. A curated schema attached to a
+ * removed script is detached (kept, but with scriptId/scriptFilename
+ * cleared, same as manually detaching one) rather than deleted, so a
+ * reviewed schema a user already invested effort into isn't lost just
+ * because its script was re-fetched. Nothing here reads or writes
+ * ImportedTextBlock[] ("saved outputs"), so those are always untouched.
+ */
+export function removeScriptPacks(
+  scripts: readonly ScriptFile[],
+  curatedSchemas: readonly CuratedActionSchema[],
+  scriptPacks: readonly ScriptPack[],
+  packIds: ReadonlySet<string>,
+): ScriptPackRemovalResult {
+  if (packIds.size === 0) {
+    return { scripts: scripts.slice(), curatedSchemas: curatedSchemas.slice(), scriptPacks: scriptPacks.slice() };
+  }
+  const removedScriptIds = new Set(scripts.filter((s) => s.packId && packIds.has(s.packId)).map((s) => s.id));
+  return {
+    scripts: scripts.filter((s) => !removedScriptIds.has(s.id)),
+    curatedSchemas: curatedSchemas.map((cs) => (cs.scriptId && removedScriptIds.has(cs.scriptId) ? detachCuratedSchema(cs) : cs)),
+    scriptPacks: scriptPacks.filter((p) => !packIds.has(p.id)),
+  };
 }

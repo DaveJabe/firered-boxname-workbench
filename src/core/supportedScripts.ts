@@ -5,8 +5,9 @@
 // SAFETY CONTRACT: this only reads already-known ScriptFile/CuratedActionSchema
 // data — no scanning, filling, or generation happens here.
 
-import type { CuratedActionSchema, ScriptFile } from './types.js';
-import { isUnknownTarget } from './gameTarget.js';
+import type { CuratedActionSchema, CuratedSchemaStatus, EsharkCategory, GameTarget, ScriptFile, ScriptPack } from './types.js';
+import { isUnknownTarget, UNKNOWN_TARGET } from './gameTarget.js';
+import { buildScriptPackRows } from './scriptPack.js';
 
 export type ScriptSupportBucket = 'ready' | 'needs-review' | 'no-candidates' | 'disabled-or-incompatible';
 
@@ -82,4 +83,48 @@ export function summarizeSupportedScripts(
     }
   }
   return summary;
+}
+
+/** One row for Manage Scripts' compact catalog view — everything a row needs to render without a second lookup. */
+export interface CompactScriptRow {
+  scriptId: string;
+  filename: string;
+  title?: string;
+  category?: EsharkCategory;
+  target: GameTarget;
+  candidateCount: number;
+  bucket: ScriptSupportBucket;
+  /** Status of the schema that determined this row's bucket, if any is attached. */
+  schemaStatus?: CuratedSchemaStatus;
+  /** Present only when bucket === 'ready' — the schema Run/Review acts on. */
+  readySchemaId?: string;
+}
+
+/** Build one compact row per script, bucketed and ready to group for the default catalog view. */
+export function buildCompactScriptRows(
+  scripts: readonly ScriptFile[],
+  curatedSchemas: readonly CuratedActionSchema[],
+  packs: readonly ScriptPack[],
+): CompactScriptRow[] {
+  const packRows = buildScriptPackRows(scripts, curatedSchemas, packs);
+  const packRowById = new Map(packRows.map((r) => [r.scriptId, r]));
+
+  return scripts.map((script) => {
+    const info = computeScriptSupportInfo(script, curatedSchemas);
+    const packRow = packRowById.get(script.id);
+    const attachedSchema = info.readySchema ?? curatedSchemas.find((s) => s.scriptId === script.id);
+
+    const row: CompactScriptRow = {
+      scriptId: script.id,
+      filename: script.filename,
+      target: packRow?.target ?? UNKNOWN_TARGET,
+      candidateCount: packRow?.candidateCount ?? 0,
+      bucket: info.bucket,
+    };
+    if (packRow?.title) row.title = packRow.title;
+    if (script.category) row.category = script.category;
+    if (attachedSchema) row.schemaStatus = attachedSchema.status;
+    if (info.readySchema) row.readySchemaId = info.readySchema.id;
+    return row;
+  });
 }

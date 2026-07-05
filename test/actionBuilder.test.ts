@@ -123,7 +123,6 @@ describe('mock generator adapter', () => {
     const input: ActionInput = { actionId: t.id, revisionLabel: 'Rev X', values: defaultActionValues(t) };
     const output = MockGeneratorAdapter.generate(t, input, () => ISO);
     expect(output.actionId).toBe(t.id);
-    expect(output.actionLabel).toBe(t.label);
     expect(output.revisionLabel).toBe('Rev X');
     expect(output.generatedAt).toBe(ISO);
     expect(output.isMock).toBe(true);
@@ -184,7 +183,7 @@ describe('saving mock output as a project block', () => {
     );
     const block: ImportedTextBlock = {
       id: 'b1',
-      title: `${output.actionLabel} — mock output`,
+      title: `${t.label} — mock output`,
       categoryLabel: 'Mock output',
       revisionLabel: output.revisionLabel,
       rawText,
@@ -195,7 +194,7 @@ describe('saving mock output as a project block', () => {
         importedAt: ISO,
         schemaVersion: SOURCE_SCHEMA_VERSION,
         actionId: output.actionId,
-        actionLabel: output.actionLabel,
+        actionLabel: t.label,
         generatedBy: 'mock-generator-adapter',
       },
     };

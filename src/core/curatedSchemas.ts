@@ -1,11 +1,13 @@
-// Pure helpers for curated action schemas (mock mode only).
+// Pure helpers for curated action schemas — the data behind Run Script's
+// manual script-filling workflow (fillScriptFromSchema, called separately
+// with the full schema) and, historically, the built-in mock templates.
 //
 // A CuratedActionSchema only ever changes which fields the Action Builder
-// renders and validates. Generation itself is untouched: toActionTemplateShape
-// produces the same ActionTemplate-shaped object the built-in mock templates
-// use, so the Action Builder can call MockGeneratorAdapter identically either
-// way — it never reads variableName, helpText, or warnings, so no script
-// filling or real generation can happen through this path.
+// renders and validates. toActionTemplateShape strips it down to the same
+// ActionField[] shape a built-in template uses, purely for rendering —
+// it never reads variableName, helpText, or warnings, so no script filling
+// happens through this specific conversion; filling reads the original
+// CuratedActionSchema directly, not this adapted shape.
 
 import type { ActionField, ActionTemplate } from '../templates/action-templates.js';
 import type { ActionFieldOption, CuratedActionSchema, CuratedSchemaField, GameTarget, ImportedTextBlock } from './types.js';
@@ -49,7 +51,7 @@ export function toActionTemplateShape(schema: CuratedActionSchema): ActionTempla
   };
 }
 
-/** Disabled schemas are excluded from selection; draft and reviewed are usable in mock mode. */
+/** Disabled schemas are excluded from selection; draft and reviewed are both selectable in Run Script. */
 export function isSchemaSelectable(schema: CuratedActionSchema): boolean {
   return schema.status !== 'disabled';
 }

@@ -1,4 +1,4 @@
-// Pure helpers for the in-app curated schema builder (mock mode only).
+// Pure helpers for the in-app curated schema builder.
 //
 // SAFETY CONTRACT: this module never executes, assembles, or fills a script,
 // and never invokes a generator. It only maps a scanner VariableCandidate

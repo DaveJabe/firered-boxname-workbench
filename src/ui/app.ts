@@ -57,18 +57,22 @@ import {
   filterScriptRows,
   searchScriptRows,
   effectiveScriptTarget,
+  findEsharkGithubPacks,
+  removeScriptPacks,
   type CollectedFile,
   type ScriptPackRow,
   type ScriptLibraryFilter,
 } from '../core/scriptPack.js';
 import { findMatchingPreset, applyPreset } from '../core/schemaPresets.js';
 import { SCHEMA_PRESETS } from '../templates/schema-presets.js';
-import { summarizeSupportedScripts } from '../core/supportedScripts.js';
+import { buildCompactScriptRows, computeScriptSupportInfo, type CompactScriptRow } from '../core/supportedScripts.js';
+import { summarizeWorkspaceStatus, formatWorkspaceStatusLine } from '../core/workspaceStatus.js';
 import {
   matchReviewedPresets,
   buildCuratedSchemaFromPreset,
   buildReviewedPresetExport,
   serializeReviewedPresetForExport,
+  type ReviewedSchemaPreset,
 } from '../core/reviewedSchemaPresets.js';
 import { REVIEWED_SCHEMA_PRESETS } from '../templates/reviewed-schema-presets.js';
 import { referenceEntryLabel } from '../core/referenceData.js';
@@ -397,6 +401,15 @@ const state: {
   scriptsFilter: ScriptLibraryFilter;
   /** Manage Scripts: current search text (filename/title). */
   scriptsSearch: string;
+  /**
+   * Manage Scripts: whether the "Advanced: all scripts" disclosure should
+   * render open. Since render() replaces the whole screen's innerHTML on
+   * every call, a plain HTML `open` attribute can't rely on the browser's
+   * own toggled state surviving past the next re-render — this flag is the
+   * persistent source of truth, kept in sync with the user's own
+   * clicks via a native 'toggle' event listener (see initEventListeners).
+   */
+  scriptsAdvancedOpen: boolean;
   /** Manage Scripts: target metadata to apply to the next imported script folder. */
   pendingPackTarget: GameTarget;
   pendingPackTargetNotes: string;
@@ -418,6 +431,7 @@ const state: {
   manageWorkspacesOpen: false,
   scriptsFilter: 'all',
   scriptsSearch: '',
+  scriptsAdvancedOpen: false,
   pendingPackTarget: UNKNOWN_TARGET,
   pendingPackTargetNotes: '',
   pendingSourceProfile: 'generic',
@@ -904,10 +918,21 @@ function renderActions(): string {
 
   if (selectable.length === 0) {
     return `<h1>Run Script</h1>
+      ${workspaceStatusStripHtml(p)}
       <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
       <div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
-        <p class="muted">No scripts are ready yet. Import a script and create a schema first.</p>
-        <button class="btn primary" data-action="nav" data-screen="scripts">Manage scripts</button>
+        <h3>Get started</h3>
+        <p class="muted">This workspace doesn't have any runnable scripts yet:</p>
+        <ol>
+          <li>Fetch E-Sh4rk scripts from GitHub (or import your own in Manage Scripts).</li>
+          <li>Apply a reviewed preset, or scan a script and review a curated schema yourself.</li>
+          <li>Come back here — Run Script will show it.</li>
+        </ol>
+        <div class="row">
+          <button class="btn primary" data-action="nav" data-screen="scripts">Fetch scripts</button>
+          <button class="btn" data-action="nav" data-screen="scripts">Review schemas</button>
+          <button class="btn" data-action="nav" data-screen="scripts">Manage scripts</button>
+        </div>
       </div>`;
   }
 
@@ -931,6 +956,7 @@ function renderActions(): string {
 
   if (!resolved) {
     return `<h1>Run Script</h1>
+      ${workspaceStatusStripHtml(p)}
       <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
       ${targetCard}
       <div class="card" style="border-color:#e0a458;background:#fffaf2">
@@ -967,6 +993,7 @@ function renderActions(): string {
     : '';
 
   return `<h1>Run Script</h1>
+    ${workspaceStatusStripHtml(p)}
     <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
     ${targetCard}
     <div class="card">
@@ -1378,7 +1405,10 @@ function scriptPackCard(pack: ScriptPack, scripts: readonly ScriptFile[]): strin
     </div>
     ${esharkInfo}
     ${pack.targetNotes ? `<p class="muted">${escapeHtml(pack.targetNotes)}</p>` : ''}
-    <button class="btn small" data-action="scan-all-in-pack" data-id="${attr(pack.id)}"${packScripts.length === 0 ? ' disabled' : ''}>${unscanned > 0 ? `Scan all scripts (${unscanned} unscanned)` : 'Re-scan all scripts'}</button>
+    <div class="row">
+      <button class="btn small" data-action="scan-all-in-pack" data-id="${attr(pack.id)}"${packScripts.length === 0 ? ' disabled' : ''}>${unscanned > 0 ? `Scan all scripts (${unscanned} unscanned)` : 'Re-scan all scripts'}</button>
+      ${pack.sourceProfile === 'eshark-github' ? `<button class="btn small" data-action="delete-eshark-pack" data-id="${attr(pack.id)}">Delete fetched pack</button>` : ''}
+    </div>
   </div>`;
 }
 
@@ -1419,35 +1449,108 @@ function scriptSummaryTable(rows: ScriptPackRow[]): string {
   return `<table><thead><tr><th>Filename</th><th>Relative path</th><th>Title</th><th>Target</th><th>Category</th><th>Candidates</th><th>User-facing</th><th>Internal/helper</th><th>Schema attached</th><th></th></tr></thead><tbody>${trs}</tbody></table>`;
 }
 
-function supportedScriptsHtml(project: Project): string {
+/** Compact one-line orientation strip, e.g. "E-Sh4rk @ main · 112 scripts · 1 ready · 97 need review". */
+function workspaceStatusStripHtml(project: Project): string {
   if (project.scripts.length === 0) return '';
-  const summary = summarizeSupportedScripts(project.scripts, project.curatedSchemas);
+  const summary = summarizeWorkspaceStatus(project.scripts, project.curatedSchemas, project.scriptPacks);
+  const scannedNote = summary.scannedScripts < summary.totalScripts ? ` (${summary.scannedScripts} scanned)` : '';
+  const fetchedNote = summary.latestEsharkGithubPack?.fetchedAt ? ` · fetched ${escapeHtml(summary.latestEsharkGithubPack.fetchedAt.slice(0, 10))}` : '';
+  return `<p class="muted" style="font-size:0.9rem">${escapeHtml(formatWorkspaceStatusLine(summary))}${scannedNote}${fetchedNote}</p>`;
+}
 
-  const readyRows = summary.ready
-    .map(
-      ({ script, schema }) => `<tr>
-        <td>${escapeHtml(schema.label)}</td>
-        <td>${escapeHtml(script.filename)}</td>
-        <td>${escapeHtml(targetLabel(schema.target))}</td>
-        <td>${schema.fields.length}</td>
-        <td><span class="pill status-${escapeHtml(schema.status)}">${escapeHtml(schema.status)}</span></td>
-        <td><button class="btn small" data-action="run-supported-script" data-id="${attr(schema.id)}">Run</button></td>
-      </tr>`,
-    )
+/** The single reviewed preset that unambiguously matches this script and isn't already applied to it, if exactly one does. */
+function unambiguousPresetMatch(script: ScriptFile, project: Project): ReviewedSchemaPreset | undefined {
+  const matches = matchReviewedPresets(REVIEWED_SCHEMA_PRESETS, {
+    filename: script.filename,
+    title: script.lastScan?.title,
+    category: script.category,
+  }).filter((m) => !project.curatedSchemas.some((cs) => cs.id === `${m.preset.id}-for-${script.id}`));
+  return matches.length === 1 ? matches[0].preset : undefined;
+}
+
+/** One compact row's primary action: Run (ready), Apply preset (unambiguous match), or Review/Open details otherwise. */
+function compactRowActionHtml(row: CompactScriptRow, project: Project): string {
+  if (row.bucket === 'ready' && row.readySchemaId) {
+    return `<button class="btn small" data-action="run-supported-script" data-id="${attr(row.readySchemaId)}">Run</button>`;
+  }
+  const script = project.scripts.find((s) => s.id === row.scriptId);
+  const preset = script ? unambiguousPresetMatch(script, project) : undefined;
+  if (preset) {
+    return `<button class="btn small primary" data-action="apply-reviewed-preset" data-id="${attr(row.scriptId)}" data-preset="${attr(preset.id)}">Apply preset</button>`;
+  }
+  const label = row.schemaStatus === 'draft' ? 'Review' : 'Open details';
+  return `<button class="btn small" data-action="open-script" data-id="${attr(row.scriptId)}">${label}</button>`;
+}
+
+function compactRowHtml(row: CompactScriptRow, project: Project): string {
+  return `<tr>
+    <td>${escapeHtml(row.title ?? row.filename)}</td>
+    <td>${row.category ? escapeHtml(row.category) : '—'}</td>
+    <td>${escapeHtml(targetLabel(row.target))}</td>
+    <td>${row.candidateCount}</td>
+    <td>${row.schemaStatus ? `<span class="pill status-${escapeHtml(row.schemaStatus)}">${escapeHtml(row.schemaStatus)}</span>` : '—'}</td>
+    <td>${compactRowActionHtml(row, project)}</td>
+  </tr>`;
+}
+
+const COMPACT_TABLE_HEAD = '<thead><tr><th>Script</th><th>Category</th><th>Target</th><th>Candidates</th><th>Status</th><th></th></tr></thead>';
+
+/**
+ * Manage Scripts' default view: four compact sections (Ready / Needs review
+ * / No candidate fields / everything else) instead of one giant scanner
+ * table. "Advanced: all scripts" (the full per-script cards, raw text,
+ * directive/candidate tables, draft schema, JSON export/import) lives in
+ * renderScripts()'s own details disclosure, not here.
+ */
+function compactCatalogHtml(project: Project): string {
+  if (project.scripts.length === 0) return '';
+  const rows = buildCompactScriptRows(project.scripts, project.curatedSchemas, project.scriptPacks);
+  const ready = rows.filter((r) => r.bucket === 'ready');
+  const needsReview = rows.filter((r) => r.bucket === 'needs-review');
+  const noCandidates = rows.filter((r) => r.bucket === 'no-candidates');
+  const disabledOrIncompatible = rows.filter((r) => r.bucket === 'disabled-or-incompatible');
+
+  const readyRows = ready
+    .map((row) => {
+      const schema = project.curatedSchemas.find((s) => s.id === row.readySchemaId);
+      return `<tr>
+        <td>${schema ? escapeHtml(schema.label) : '—'}</td>
+        <td>${escapeHtml(row.title ?? row.filename)}</td>
+        <td>${escapeHtml(targetLabel(row.target))}</td>
+        <td>${schema?.fields.length ?? row.candidateCount}</td>
+        <td><span class="pill status-reviewed">reviewed</span></td>
+        <td><button class="btn small" data-action="run-supported-script" data-id="${attr(row.readySchemaId ?? '')}">Run</button></td>
+      </tr>`;
+    })
     .join('');
+
+  const hasUnambiguousPresetSomewhere = [...needsReview, ...noCandidates, ...disabledOrIncompatible].some(
+    (r) => !!project.scripts.find((s) => s.id === r.scriptId) && unambiguousPresetMatch(project.scripts.find((s) => s.id === r.scriptId)!, project),
+  );
 
   return `<div class="card">
     <h3>Supported scripts</h3>
     <p class="muted">A script is "Ready" once a reviewed schema with an explicit target is attached to it — apply a reviewed preset, or create and review a curated schema.</p>
     <div class="row filters" role="group" aria-label="Support status">
-      <span class="chip">Ready: ${summary.ready.length}</span>
-      <span class="chip">Needs review: ${summary.needsReview.length}</span>
-      <span class="chip">No candidate fields: ${summary.noCandidates.length}</span>
-      <span class="chip">Disabled/incompatible target: ${summary.disabledOrIncompatible.length}</span>
+      <span class="chip">Ready: ${ready.length}</span>
+      <span class="chip">Needs review: ${needsReview.length}</span>
+      <span class="chip">No candidate fields: ${noCandidates.length}</span>
+      <span class="chip">Disabled/incompatible target: ${disabledOrIncompatible.length}</span>
     </div>
-    ${summary.ready.length > 0
+    ${hasUnambiguousPresetSomewhere ? `<div class="row" style="margin:0.5rem 0"><button class="btn" data-action="apply-all-unambiguous-presets">Apply all unambiguous reviewed presets</button></div>` : ''}
+    <h4>Ready</h4>
+    ${ready.length > 0
       ? `<table><thead><tr><th>Action</th><th>Script</th><th>Target</th><th>Fields</th><th>Status</th><th></th></tr></thead><tbody>${readyRows}</tbody></table>`
-      : '<p class="muted">No scripts are ready to run for this target yet. Apply a reviewed schema preset below, or create/review a curated schema, then match Run Script\'s target.</p>'}
+      : '<p class="muted">No scripts are ready yet. Apply a reviewed schema preset, or create/review a curated schema.</p>'}
+    ${needsReview.length > 0
+      ? `<h4>Needs review</h4><table>${COMPACT_TABLE_HEAD}<tbody>${needsReview.map((r) => compactRowHtml(r, project)).join('')}</tbody></table>`
+      : ''}
+    ${noCandidates.length > 0
+      ? `<h4>No candidate fields</h4><table>${COMPACT_TABLE_HEAD}<tbody>${noCandidates.map((r) => compactRowHtml(r, project)).join('')}</tbody></table>`
+      : ''}
+    ${disabledOrIncompatible.length > 0
+      ? `<h4>Disabled / incompatible target</h4><table>${COMPACT_TABLE_HEAD}<tbody>${disabledOrIncompatible.map((r) => compactRowHtml(r, project)).join('')}</tbody></table>`
+      : ''}
   </div>`;
 }
 
@@ -1486,9 +1589,9 @@ function renderScripts(): string {
     : '';
 
   return `<h1>Manage Scripts <span class="pill">developer-only, informational</span></h1>
-    <p class="muted">The recommended path is to fetch E-Sh4rk scripts from GitHub, review or apply a reviewed schema preset, then run them from Run Script. The scanner never executes, assembles, or generates anything — it only reports draft candidates for you to review.</p>
+    ${workspaceStatusStripHtml(p)}
+    <p class="muted">The recommended path is to fetch E-Sh4rk scripts from GitHub, review or apply a reviewed schema preset, then run them from Run Script.</p>
     ${emptyStateHtml}
-    ${supportedScriptsHtml(p)}
     <div class="card">
       <h3>Fetch E-Sh4rk scripts from GitHub <span class="pill">recommended</span></h3>
       <p class="muted">
@@ -1506,9 +1609,13 @@ function renderScripts(): string {
         <button class="btn primary" data-action="fetch-eshark-github"${state.esharkFetchInProgress ? ' disabled' : ''}>${state.esharkFetchInProgress ? 'Fetching from GitHub…' : 'Fetch E-Sh4rk scripts from GitHub'}</button>
       </div>
     </div>
-    ${managementHtml}
-    ${cardsHtml}
+    ${compactCatalogHtml(p)}
     ${unattachedHtml}
+    <details id="scripts-advanced-details"${state.scriptsAdvancedOpen ? ' open' : ''}>
+      <summary class="muted" style="cursor:pointer">Advanced: all scripts (raw text, scanner details, JSON export/import)</summary>
+      ${managementHtml}
+      ${cardsHtml}
+    </details>
     <details>
       <summary class="muted" style="cursor:pointer">Advanced / manual import — for offline use or a pinned local copy</summary>
       <p class="muted">Fetching from GitHub above is the recommended way to get E-Sh4rk scripts. Use local import only if you're offline, want a specific pinned copy, or are working with scripts that aren't on GitHub.</p>
@@ -1848,6 +1955,7 @@ function resetViewState(project: Project): void {
   state.schemaEditor = null;
   state.scriptsFilter = 'all';
   state.scriptsSearch = '';
+  state.scriptsAdvancedOpen = false;
   state.pendingPackTarget = UNKNOWN_TARGET;
   state.pendingPackTargetNotes = '';
   state.pendingSourceProfile = 'generic';
@@ -2178,6 +2286,21 @@ async function handleClick(e: Event): Promise<void> {
     case 'fetch-eshark-github':
       void handleFetchEsharkGithub();
       break;
+    case 'delete-eshark-pack': {
+      if (!p || !id) break;
+      const pack = p.scriptPacks.find((pk) => pk.id === id);
+      if (!pack) break;
+      const confirmed = window.confirm(
+        `Delete fetched pack "${pack.name}" and its scripts? Reviewed schemas and saved outputs will be preserved.`,
+      );
+      if (!confirmed) break;
+      const removal = removeScriptPacks(p.scripts, p.curatedSchemas, p.scriptPacks, new Set([id]));
+      p.scripts = removal.scripts;
+      p.curatedSchemas = removal.curatedSchemas;
+      p.scriptPacks = removal.scriptPacks;
+      commit();
+      break;
+    }
     case 'remove-script':
       if (p && id) {
         p.scripts = p.scripts.filter((s) => s.id !== id);
@@ -2208,6 +2331,7 @@ async function handleClick(e: Event): Promise<void> {
         state.scriptsFilter = 'all';
         state.scriptsSearch = '';
         state.highlightRef = id;
+        state.scriptsAdvancedOpen = true;
       }
       render();
       break;
@@ -2228,6 +2352,24 @@ async function handleClick(e: Event): Promise<void> {
       const preset = REVIEWED_SCHEMA_PRESETS.find((pr) => pr.id === presetId);
       if (!script || !preset) break;
       upsertCuratedSchema(p.curatedSchemas, buildCuratedSchemaFromPreset(preset, script));
+      commit();
+      break;
+    }
+    case 'apply-all-unambiguous-presets': {
+      if (!p) break;
+      const candidates = p.scripts
+        .filter((script) => computeScriptSupportInfo(script, p.curatedSchemas).bucket !== 'ready')
+        .map((script) => ({ script, preset: unambiguousPresetMatch(script, p) }))
+        .filter((c): c is { script: ScriptFile; preset: ReviewedSchemaPreset } => !!c.preset);
+      if (candidates.length === 0) break;
+      const listing = candidates.map((c) => `${c.script.filename} → ${c.preset.label}`).join('\n');
+      const confirmed = window.confirm(
+        `Apply ${candidates.length} unambiguous reviewed preset${candidates.length === 1 ? '' : 's'}?\n\n${listing}`,
+      );
+      if (!confirmed) break;
+      for (const c of candidates) {
+        upsertCuratedSchema(p.curatedSchemas, buildCuratedSchemaFromPreset(c.preset, c.script));
+      }
       commit();
       break;
     }
@@ -2882,12 +3024,37 @@ async function handleScriptFolderFile(input: HTMLInputElement): Promise<void> {
 async function handleFetchEsharkGithub(): Promise<void> {
   const p = state.project;
   if (!p || state.esharkFetchInProgress) return;
+
+  // Ask before fetching (not after) so a decline costs no network request —
+  // and so a fetch that turns out empty never leaves the old pack removed.
+  const existingPacks = findEsharkGithubPacks(p.scriptPacks);
+  if (existingPacks.length > 0) {
+    const confirmed = window.confirm(
+      'Replace existing fetched E-Sh4rk scripts? Existing reviewed schemas and saved outputs will be preserved.',
+    );
+    if (!confirmed) return;
+  }
+
   state.esharkFetchInProgress = true;
   render();
 
   try {
     const result = await fetchEsharkFilesFrlg();
     state.esharkFetchInProgress = false;
+
+    if (collectScriptPackFiles(result.files).scripts.length === 0) {
+      render();
+      window.alert('No .txt scripts were found in the fetched files_frlg folder.');
+      return;
+    }
+
+    if (existingPacks.length > 0) {
+      const removal = removeScriptPacks(p.scripts, p.curatedSchemas, p.scriptPacks, new Set(existingPacks.map((pk) => pk.id)));
+      p.scripts = removal.scripts;
+      p.curatedSchemas = removal.curatedSchemas;
+      p.scriptPacks = removal.scriptPacks;
+    }
+
     const imported = importEsharkFiles(p, result.files, {
       sourceProfile: 'eshark-github',
       packName: `E-Sh4rk scripts (GitHub @ ${result.ref})`,
@@ -2941,6 +3108,18 @@ export async function init(): Promise<void> {
   const root = app();
   root.addEventListener('click', (e) => void handleClick(e));
   root.addEventListener('change', (e) => void handleChange(e));
+  // 'toggle' doesn't bubble, so this only fires via the capture phase — kept
+  // in sync here (not through render()) so a manual open/close survives the
+  // next unrelated re-render, which otherwise rebuilds this <details> from
+  // scratch and would silently re-close it.
+  root.addEventListener(
+    'toggle',
+    (e) => {
+      const el = e.target as HTMLElement;
+      if (el.id === 'scripts-advanced-details') state.scriptsAdvancedOpen = (el as HTMLDetailsElement).open;
+    },
+    true,
+  );
   state.summaries = await listProjects();
   await openDefaultWorkspace();
   render();

@@ -257,7 +257,6 @@ export interface BoxNameRow {
 /** The result of running the mock generator adapter over an ActionInput. */
 export interface MockGeneratedOutput {
   actionId: string;
-  actionLabel: string;
   revisionLabel: string;
   generatedAt: string;
   rows: readonly BoxNameRow[];
@@ -463,18 +462,18 @@ export interface ScriptPack {
   sourceRef?: string;
 }
 
-// --- Curated action schemas (mock mode only) --------------------------------
+// --- Curated action schemas --------------------------------------------------
 //
 // A CuratedActionSchema is a HAND-REVIEWED field mapping for a script,
 // distinct from the auto-generated DraftActionSchema above: it carries a
 // review status, a script-variable mapping per field, and human-facing help
 // text/warnings. It lives in Project.curatedSchemas — separate from the
-// built-in mock ACTION_TEMPLATES catalog. The Action Builder can select one
-// in mock mode (selecting one only changes which fields render and validate,
-// never what MockGeneratorAdapter computes) AND, when it is linked to an
-// imported script, use it to conservatively fill that script's header (see
-// FilledScriptResult below) for the user to copy into their OWN external
-// generator. No generator is ever invoked by this app.
+// built-in mock ACTION_TEMPLATES catalog (a legacy Phase 1 placeholder no
+// longer wired into the UI). Run Script uses a curated schema to render and
+// validate its fields, and — when it is linked to an imported script — to
+// conservatively fill that script's header (see FilledScriptResult below)
+// for the user to copy into their OWN external generator. No generator is
+// ever invoked by this app.
 
 export type CuratedSchemaStatus = 'draft' | 'reviewed' | 'disabled';
 

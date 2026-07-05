@@ -27,6 +27,8 @@ import type {
   GameTarget,
   SchemaReviewCase,
   ParsedBoxNameRow,
+  GeneratorOutputProvenance,
+  GeneratorOutputSource,
 } from '../core/types.js';
 import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/sources.js';
 import { TARGET_GAMES, TARGET_LANGUAGES, TARGET_REVISIONS, UNKNOWN_TARGET } from '../core/gameTarget.js';
@@ -611,6 +613,7 @@ export function importCuratedActionSchemaJson(text: string): CuratedActionSchema
 // --- Schema review cases -----------------------------------------------------
 
 const SCHEMA_REVIEW_CASE_STATUSES = ['draft', 'passing', 'failing', 'accepted'] as const;
+const GENERATOR_OUTPUT_SOURCES: readonly GeneratorOutputSource[] = ['manual-paste', 'future-adapter'];
 
 function asActionFieldValueRecord(v: unknown, path: string): Record<string, ActionFieldValue> {
   const o = asObject(v, path);
@@ -634,6 +637,19 @@ function parseParsedBoxNameRow(v: unknown, path: string): ParsedBoxNameRow {
     spacedDisplay: asString(o.spacedDisplay, `${path}.spacedDisplay`),
     compactText: o.compactText === null ? null : asString(o.compactText, `${path}.compactText`),
   };
+}
+
+function parseGeneratorOutputProvenance(v: unknown, path: string): GeneratorOutputProvenance {
+  const o = asObject(v, path);
+  const provenance: GeneratorOutputProvenance = {
+    source: asEnum(o.source, GENERATOR_OUTPUT_SOURCES, `${path}.source`),
+    capturedAt: asString(o.capturedAt, `${path}.capturedAt`),
+  };
+  const sourceLabel = asOptString(o.sourceLabel, `${path}.sourceLabel`);
+  if (sourceLabel !== undefined) provenance.sourceLabel = sourceLabel;
+  const parserVersion = asOptNumber(o.parserVersion, `${path}.parserVersion`);
+  if (parserVersion !== undefined) provenance.parserVersion = parserVersion;
+  return provenance;
 }
 
 function parseSchemaReviewCase(v: unknown, path: string): SchemaReviewCase {
@@ -679,6 +695,9 @@ function parseSchemaReviewCase(v: unknown, path: string): SchemaReviewCase {
   }
   const generatorOutputHash = asOptString(o.generatorOutputHash, `${path}.generatorOutputHash`);
   if (generatorOutputHash !== undefined) reviewCase.generatorOutputHash = generatorOutputHash;
+  if (o.outputProvenance !== undefined) {
+    reviewCase.outputProvenance = parseGeneratorOutputProvenance(o.outputProvenance, `${path}.outputProvenance`);
+  }
   return reviewCase;
 }
 

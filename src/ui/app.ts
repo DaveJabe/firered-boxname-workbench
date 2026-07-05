@@ -55,6 +55,7 @@ import {
 import {
   verifySchemaReviewCase,
   hashGeneratorOutput,
+  buildManualPasteProvenance,
   summarizeVariantVerification,
   summarizePresetVerification,
   describeSchemaVerificationSetupError,
@@ -471,6 +472,7 @@ function buildReviewCaseFromEditor(editor: ReviewCaseEditorState, id: string, no
   if (editor.rawGeneratorOutput) {
     reviewCase.rawGeneratorOutput = editor.rawGeneratorOutput;
     reviewCase.generatorOutputHash = hashGeneratorOutput(editor.rawGeneratorOutput);
+    reviewCase.outputProvenance = buildManualPasteProvenance(now);
   }
   if (editor.parsedBoxRows) reviewCase.parsedBoxRows = editor.parsedBoxRows;
   return reviewCase;

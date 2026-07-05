@@ -4,11 +4,13 @@ import { scanScript } from '../src/core/scriptScanner.js';
 import {
   verifySchemaReviewCase,
   hashGeneratorOutput,
+  buildManualPasteProvenance,
   summarizeVariantVerification,
   summarizeAllVariantVerifications,
   summarizePresetVerification,
   describeSchemaVerificationSetupError,
 } from '../src/core/schemaVerification.js';
+import { GENERATOR_OUTPUT_PARSER_VERSION } from '../src/core/generatorOutputParser.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 import { createProject } from '../src/core/factory.js';
 import {
@@ -262,18 +264,53 @@ describe('verifySchemaReviewCase — pasted generator output', () => {
   });
 });
 
+describe('generator output provenance', () => {
+  it('buildManualPasteProvenance captures manual-paste source, label, capturedAt, and the current parser version', () => {
+    const provenance = buildManualPasteProvenance('2026-07-05T12:00:00.000Z');
+    expect(provenance).toEqual({
+      source: 'manual-paste',
+      sourceLabel: 'Manual E-Sh4rk paste-back',
+      capturedAt: '2026-07-05T12:00:00.000Z',
+      parserVersion: GENERATOR_OUTPUT_PARSER_VERSION,
+    });
+  });
+
+  it('verification ignores provenance entirely for pass/fail logic — identical otherwise, one with provenance and one without', () => {
+    const project = makeProject([makeScript()], [makeCleanSchema()]);
+    const rawGeneratorOutput = 'Box 1: FOO [abc]';
+    const withProvenance = makeReviewCase({ rawGeneratorOutput, outputProvenance: buildManualPasteProvenance(ISO) });
+    const withoutProvenance = makeReviewCase({ rawGeneratorOutput, outputProvenance: undefined });
+
+    const resultWith = verifySchemaReviewCase(project, makeCleanSchema(), withProvenance);
+    const resultWithout = verifySchemaReviewCase(project, makeCleanSchema(), withoutProvenance);
+    expect(resultWith).toEqual(resultWithout);
+    expect(resultWith.status).toBe('passing');
+
+    // Also true on the failure path — a bogus/mismatched provenance never turns a pass into a fail or vice versa.
+    const bogusProvenance = makeReviewCase({
+      rawGeneratorOutput, generatorOutputHash: 'deadbeef',
+      outputProvenance: { source: 'future-adapter', capturedAt: ISO },
+    });
+    const noProvenanceSameBreak = makeReviewCase({ rawGeneratorOutput, generatorOutputHash: 'deadbeef' });
+    expect(verifySchemaReviewCase(project, makeCleanSchema(), bogusProvenance)).toEqual(
+      verifySchemaReviewCase(project, makeCleanSchema(), noProvenanceSameBreak),
+    );
+  });
+});
+
 function makeProjectWithReviewCase(): Project {
   const project = makeProject([makeScript()], [makeCleanSchema()]);
   project.scriptPacks = [{ id: 'pack-1', name: 'Unrelated pack', importedAt: ISO, defaultTarget: UNKNOWN_TARGET, scriptIds: [] }];
-  project.schemaReviewCases = [makeReviewCase({ rawGeneratorOutput: 'Box 1: FOO [abc]' })];
+  project.schemaReviewCases = [makeReviewCase({ rawGeneratorOutput: 'Box 1: FOO [abc]', outputProvenance: buildManualPasteProvenance(ISO) })];
   return project;
 }
 
 describe('schema review case export/import', () => {
-  it('round-trips a project with a schema review case through export/import unchanged', () => {
+  it('round-trips a project with a schema review case (including provenance) through export/import unchanged', () => {
     const project = makeProjectWithReviewCase();
     const roundTripped = importProjectJson(exportProjectJson(project));
     expect(roundTripped.schemaReviewCases).toEqual(project.schemaReviewCases);
+    expect(roundTripped.schemaReviewCases[0]!.outputProvenance).toEqual(buildManualPasteProvenance(ISO));
   });
 
   it('defaults schemaReviewCases to an empty array for older project exports missing the field', () => {
@@ -286,6 +323,29 @@ describe('schema review case export/import', () => {
   it('round-trips a single review case (including scriptId/variantId) through its own export/import unchanged', () => {
     const reviewCase = makeReviewCase({ rawGeneratorOutput: 'Box 1: FOO [abc]', reviewerNote: 'looks right' });
     expect(importSchemaReviewCaseJson(exportSchemaReviewCaseJson(reviewCase))).toEqual(reviewCase);
+  });
+
+  it('round-trips generator output provenance (source/sourceLabel/capturedAt/parserVersion) through export/import unchanged', () => {
+    const reviewCase = makeReviewCase({
+      rawGeneratorOutput: 'Box 1: FOO [abc]',
+      outputProvenance: buildManualPasteProvenance('2026-07-05T12:00:00.000Z'),
+    });
+    const roundTripped = importSchemaReviewCaseJson(exportSchemaReviewCaseJson(reviewCase));
+    expect(roundTripped.outputProvenance).toEqual({
+      source: 'manual-paste',
+      sourceLabel: 'Manual E-Sh4rk paste-back',
+      capturedAt: '2026-07-05T12:00:00.000Z',
+      parserVersion: GENERATOR_OUTPUT_PARSER_VERSION,
+    });
+  });
+
+  it('round-trips a "future-adapter" provenance (no sourceLabel/parserVersion set) without inventing values', () => {
+    const reviewCase = makeReviewCase({
+      rawGeneratorOutput: 'Box 1: FOO [abc]',
+      outputProvenance: { source: 'future-adapter', capturedAt: ISO },
+    });
+    const roundTripped = importSchemaReviewCaseJson(exportSchemaReviewCaseJson(reviewCase));
+    expect(roundTripped.outputProvenance).toEqual({ source: 'future-adapter', capturedAt: ISO });
   });
 
   it('exporting a single review case never includes unrelated script packs or other project data', () => {

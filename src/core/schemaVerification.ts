@@ -6,9 +6,9 @@
 // executes, assembles, or runs a generator itself — verifying a review case
 // is exactly as safe as filling a script and parsing pasted text by hand.
 
-import type { CuratedActionSchema, Project, SchemaReviewCase } from './types.js';
+import type { CuratedActionSchema, GeneratorOutputProvenance, Project, SchemaReviewCase } from './types.js';
 import { fillScriptFromSchema } from './scriptFiller.js';
-import { parseGeneratorOutput } from './generatorOutputParser.js';
+import { parseGeneratorOutput, GENERATOR_OUTPUT_PARSER_VERSION } from './generatorOutputParser.js';
 import { checkTargetCompatibility, targetLabel } from './gameTarget.js';
 
 export interface SchemaReviewVerificationResult {
@@ -31,6 +31,22 @@ export function hashGeneratorOutput(text: string): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Provenance for a review case's pasted-output snapshot, captured at the
+ * moment Run Script's "Save as schema review case" flow saves it — the only
+ * source that currently exists. Purely informational, so future
+ * generator-adapter work can compare manual-paste cases against automated
+ * ones; verifySchemaReviewCase never reads this.
+ */
+export function buildManualPasteProvenance(capturedAt: string): GeneratorOutputProvenance {
+  return {
+    source: 'manual-paste',
+    sourceLabel: 'Manual E-Sh4rk paste-back',
+    capturedAt,
+    parserVersion: GENERATOR_OUTPUT_PARSER_VERSION,
+  };
 }
 
 /**

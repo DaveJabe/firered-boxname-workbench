@@ -602,6 +602,24 @@ export interface ParsedGeneratorOutput {
 
 export type SchemaReviewCaseStatus = 'draft' | 'passing' | 'failing' | 'accepted';
 
+/**
+ * Where a review case's pasted generator output came from — "manual-paste"
+ * for the current Run Script paste-back workflow, "future-adapter" reserved
+ * for when an automated generator adapter exists, so cases from each source
+ * can be compared later. Informational only: never read by
+ * verifySchemaReviewCase, never affects pass/fail.
+ */
+export type GeneratorOutputSource = 'manual-paste' | 'future-adapter';
+
+export interface GeneratorOutputProvenance {
+  source: GeneratorOutputSource;
+  /** Human-readable label, e.g. "Manual E-Sh4rk paste-back". */
+  sourceLabel?: string;
+  capturedAt: string;
+  /** core/generatorOutputParser.ts's GENERATOR_OUTPUT_PARSER_VERSION at capture time, if known. */
+  parserVersion?: number;
+}
+
 export interface SchemaReviewCase {
   id: string;
   /** The project curated schema this case verifies, once one exists. */
@@ -628,5 +646,7 @@ export interface SchemaReviewCase {
   parsedBoxRows?: readonly ParsedBoxNameRow[];
   /** A non-cryptographic content hash of rawGeneratorOutput at save time, for detecting drift — see hashGeneratorOutput. */
   generatorOutputHash?: string;
+  /** Where rawGeneratorOutput came from, when present — lets future generator-adapter work distinguish manual-paste cases from automated ones. */
+  outputProvenance?: GeneratorOutputProvenance;
   status: SchemaReviewCaseStatus;
 }

@@ -177,6 +177,8 @@ export interface Project {
   curatedSchemas: CuratedActionSchema[];
   /** Batch "import script folder" operations. See ScriptPack below. */
   scriptPacks: ScriptPack[];
+  /** Saved schema verification examples. See SchemaReviewCase below. */
+  schemaReviewCases: SchemaReviewCase[];
 }
 
 export interface ReviewSummary {
@@ -588,4 +590,43 @@ export interface ParsedGeneratorOutput {
   rawText: string;
   rows: readonly ParsedBoxNameRow[];
   warnings: readonly string[];
+}
+
+// --- Schema verification (review cases) -------------------------------------
+//
+// A SchemaReviewCase is a saved, re-checkable example: fixed input values,
+// which variables are expected/forbidden to change, and (optionally) a
+// pasted generator-output snapshot to detect drift. verifySchemaReviewCase
+// (core/schemaVerification.ts) only ever calls fillScriptFromSchema and the
+// existing output parser — it never invokes a generator itself.
+
+export type SchemaReviewCaseStatus = 'draft' | 'passing' | 'failing' | 'accepted';
+
+export interface SchemaReviewCase {
+  id: string;
+  /** The project curated schema this case verifies, once one exists. */
+  schemaId?: string;
+  /** The built-in reviewed preset this case verifies, before it's been applied to a project schema. */
+  presetId?: string;
+  actionKey?: string;
+  /** The supported-action variant this case verifies (see core/supportedActionRegistry.ts). Equal to schemaId in the current one-variant-per-schema model; kept as its own field since the two concepts are distinct and may diverge later. */
+  variantId?: string;
+  /** The script this case's saved input values were filled against, once one exists. */
+  scriptId?: string;
+  target: GameTarget;
+  scriptFilename?: string;
+  scriptRelativePath?: string;
+  createdAt: string;
+  reviewedAt?: string;
+  reviewerNote?: string;
+  inputValues: Record<string, ActionFieldValue>;
+  expectedChangedVariables: readonly string[];
+  forbiddenChangedVariables: readonly string[];
+  /** Optional exact expected "after" text per variable (e.g. `{ Move: 'Move = 85' }`), checked verbatim against the corresponding FilledLineChange.after. */
+  expectedFilledAssignments?: Record<string, string>;
+  rawGeneratorOutput?: string;
+  parsedBoxRows?: readonly ParsedBoxNameRow[];
+  /** A non-cryptographic content hash of rawGeneratorOutput at save time, for detecting drift — see hashGeneratorOutput. */
+  generatorOutputHash?: string;
+  status: SchemaReviewCaseStatus;
 }

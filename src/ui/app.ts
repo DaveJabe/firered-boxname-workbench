@@ -16,10 +16,12 @@ import type {
   CuratedSchemaStatus,
   FilledScriptResult,
   ParsedGeneratorOutput,
+  ParsedBoxNameRow,
   GameTarget,
   EsharkCategory,
   EsharkSourceProfile,
   ReferenceCatalogId,
+  SchemaReviewCase,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -47,8 +49,23 @@ import {
   getRunnableActionsForTarget,
   buildSupportedActionRegistry,
   type SupportedAction,
+  type SupportedActionVariant,
   type SupportedActionVariantStatus,
 } from '../core/supportedActionRegistry.js';
+import {
+  verifySchemaReviewCase,
+  hashGeneratorOutput,
+  summarizeVariantVerification,
+  summarizePresetVerification,
+  describeSchemaVerificationSetupError,
+  type ActionVariantVerificationStatus,
+} from '../core/schemaVerification.js';
+import {
+  computeSchemaShapeSignature,
+  groupScriptsByShapeSignature,
+  findSimilarScripts,
+  createDraftSchemaFromFamilyMember,
+} from '../core/schemaFamily.js';
 import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../core/schemaBuilder.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
 import { parseGeneratorOutput, formatCompactBoxNames, formatRawBoxLines } from '../core/generatorOutputParser.js';
@@ -120,6 +137,7 @@ import {
   importProjectJson,
   exportDraftActionSchemaJson,
   importCuratedActionSchemaJson,
+  exportSchemaReviewCaseJson,
   type ProjectSummary,
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
@@ -375,6 +393,99 @@ function applySchemaFieldBinding(bind: string, candidateKey: string | undefined,
   }
 }
 
+// --- Schema review case editor (Run Script "Save as schema review case") ---
+//
+// Lets a user turn a fill they've already tried (plus, optionally, output
+// they pasted back) into a re-checkable SchemaReviewCase, without writing
+// JSON by hand. Only ever builds a SchemaReviewCase object for
+// Project.schemaReviewCases — verifying one later still only ever calls
+// fillScriptFromSchema and the existing output parser (see
+// core/schemaVerification.ts), never a generator.
+
+interface ReviewCaseEditorState {
+  schemaId: string;
+  /** The supported-action variant this case verifies — equal to schemaId in the current one-variant-per-schema model (see core/supportedActionRegistry.ts). */
+  variantId: string;
+  scriptId?: string;
+  actionKey?: string;
+  target: GameTarget;
+  scriptFilename?: string;
+  scriptRelativePath?: string;
+  inputValues: Record<string, ActionFieldValue>;
+  /** Comma-separated for a single text input; parsed into an array on save. */
+  expectedChangedVariables: string;
+  forbiddenChangedVariables: string;
+  reviewerNote: string;
+  rawGeneratorOutput?: string;
+  parsedBoxRows?: readonly ParsedBoxNameRow[];
+  savedCaseId: string | null;
+}
+
+/** Prefill a review case from what's already on screen: the schema, its linked script, the current fill, and any pasted/parsed output. */
+function openReviewCaseEditor(curated: CuratedActionSchema, script: ScriptFile | undefined, ab: ActionBuilderState): void {
+  const changedVariables = ab.filledScript?.changedLines.map((c) => c.variableName) ?? [];
+  const internalVariables = (script?.lastScan?.candidates ?? []).filter((c) => c.internal).map((c) => c.name);
+  const editor: ReviewCaseEditorState = {
+    schemaId: curated.id,
+    variantId: curated.id,
+    target: curated.target,
+    inputValues: { ...ab.values },
+    expectedChangedVariables: changedVariables.join(', '),
+    forbiddenChangedVariables: internalVariables.join(', '),
+    reviewerNote: '',
+    savedCaseId: null,
+  };
+  if (curated.actionKey) editor.actionKey = curated.actionKey;
+  if (script) {
+    editor.scriptId = script.id;
+    if (script.relativePath) editor.scriptRelativePath = script.relativePath;
+  }
+  if (curated.scriptFilename) editor.scriptFilename = curated.scriptFilename;
+  if (ab.pasteBack.rawText) editor.rawGeneratorOutput = ab.pasteBack.rawText;
+  if (ab.pasteBack.parsed) editor.parsedBoxRows = ab.pasteBack.parsed.rows;
+  state.reviewCaseEditor = editor;
+}
+
+function splitCommaList(value: string): string[] {
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+function buildReviewCaseFromEditor(editor: ReviewCaseEditorState, id: string, now: string): SchemaReviewCase {
+  const reviewCase: SchemaReviewCase = {
+    id,
+    schemaId: editor.schemaId,
+    variantId: editor.variantId,
+    target: editor.target,
+    createdAt: now,
+    inputValues: editor.inputValues,
+    expectedChangedVariables: splitCommaList(editor.expectedChangedVariables),
+    forbiddenChangedVariables: splitCommaList(editor.forbiddenChangedVariables),
+    status: 'draft',
+  };
+  if (editor.actionKey) reviewCase.actionKey = editor.actionKey;
+  if (editor.scriptId) reviewCase.scriptId = editor.scriptId;
+  if (editor.scriptFilename) reviewCase.scriptFilename = editor.scriptFilename;
+  if (editor.scriptRelativePath) reviewCase.scriptRelativePath = editor.scriptRelativePath;
+  const reviewerNote = editor.reviewerNote.trim();
+  if (reviewerNote) reviewCase.reviewerNote = reviewerNote;
+  if (editor.rawGeneratorOutput) {
+    reviewCase.rawGeneratorOutput = editor.rawGeneratorOutput;
+    reviewCase.generatorOutputHash = hashGeneratorOutput(editor.rawGeneratorOutput);
+  }
+  if (editor.parsedBoxRows) reviewCase.parsedBoxRows = editor.parsedBoxRows;
+  return reviewCase;
+}
+
+function applyReviewCaseEditorBinding(bind: string, value: string): void {
+  const editor = state.reviewCaseEditor;
+  if (!editor) return;
+  switch (bind) {
+    case 'reviewcase.expectedChangedVariables': editor.expectedChangedVariables = value; break;
+    case 'reviewcase.forbiddenChangedVariables': editor.forbiddenChangedVariables = value; break;
+    case 'reviewcase.reviewerNote': editor.reviewerNote = value; break;
+  }
+}
+
 /**
  * Resolve Run Script's currently-selected schema by id exactly — no fallback
  * to "first selectable." Only ever resolves to a schema that's a ready,
@@ -428,6 +539,12 @@ const state: {
   highlightRef: string | null;
   actionBuilder: ActionBuilderState;
   schemaEditor: SchemaEditorState | null;
+  /** Run Script "Save as schema review case" — see openReviewCaseEditor. */
+  reviewCaseEditor: ReviewCaseEditorState | null;
+  /** Setup "Schema verification": which schema's review cases are currently expanded, if any. */
+  reviewCasesDetailSchemaId: string | null;
+  /** Setup "Similar scripts": which script's shape-family detail is currently expanded, if any. */
+  familyDetailScriptId: string | null;
   /** Landing screen: whether the full workspace list is expanded (vs. just the most recent one). */
   manageWorkspacesOpen: boolean;
   /** Manage Scripts: which script rows to show. */
@@ -465,6 +582,9 @@ const state: {
   highlightRef: null,
   actionBuilder: makeEmptyActionBuilderState(),
   schemaEditor: null,
+  reviewCaseEditor: null,
+  reviewCasesDetailSchemaId: null,
+  familyDetailScriptId: null,
   manageWorkspacesOpen: false,
   scriptsFilter: 'all',
   scriptsSearch: '',
@@ -929,6 +1049,26 @@ function curatedFieldExtra(field: CuratedSchemaField | undefined): string {
   </details>`;
 }
 
+/**
+ * Lower ranks sort first — a soft preference for a better-verified variant
+ * when more than one ready variant shares an action+target (a rare edge
+ * case). Never excludes anything: every ready variant still appears, just
+ * possibly reordered.
+ */
+function variantVerificationRank(project: Project, variant: SupportedActionVariant): number {
+  const schema = project.curatedSchemas.find((s) => s.id === variant.schemaId);
+  if (!schema) return 2;
+  const summary = summarizeVariantVerification(schema, project, project.schemaReviewCases);
+  switch (summary.status) {
+    case 'accepted': return 0;
+    case 'passing': return 1;
+    case 'no-cases': return 2;
+    case 'draft-cases': return 3;
+    case 'not-available': return 4;
+    case 'failing': return 5;
+  }
+}
+
 /** Action dropdown options, grouped into <optgroup>s by category (files_frlg subfolder), "Other" for uncategorized actions. */
 function actionOptGroupsHtml(actions: readonly SupportedAction[], selectedActionKey: string): string {
   const byCategory = new Map<string, SupportedAction[]>();
@@ -944,6 +1084,46 @@ function actionOptGroupsHtml(actions: readonly SupportedAction[], selectedAction
       return `<optgroup label="${attr(category)}">${opts}</optgroup>`;
     })
     .join('');
+}
+
+/**
+ * Run Script's "Save as schema review case" card — a Setup-facing action
+ * that lives here only because this is where a fill/preview/paste-back
+ * naturally happens. The saved case itself is only ever viewed, refined,
+ * and re-run from Setup's "Schema verification" panel, not here.
+ */
+function reviewCaseSectionHtml(curated: CuratedActionSchema): string {
+  const editor = state.reviewCaseEditor;
+  if (!editor || editor.schemaId !== curated.id) {
+    return `<div class="card">
+      <h3>Schema verification <span class="pill">Setup</span></h3>
+      <p class="muted">Save this fill (and any pasted output above) as a repeatable check for this schema — refine it and run verification later from Setup.</p>
+      <button class="btn" data-action="open-review-case-editor">Save as schema review case</button>
+    </div>`;
+  }
+
+  const savedNote = editor.savedCaseId
+    ? `<p class="muted">Saved &#10003; refine and run it from Setup's "Schema verification" panel.</p>`
+    : '';
+  return `<div class="card" style="border-color:#2563eb66;background:#f5f8ff">
+    <div class="row" style="justify-content:space-between">
+      <h3>Save as schema review case</h3>
+      <button class="btn small" data-action="cancel-review-case-editor">Close</button>
+    </div>
+    <p class="muted">Target: ${escapeHtml(targetLabel(editor.target))}${editor.scriptFilename ? ' · from ' + escapeHtml(editor.scriptFilename) : ''}</p>
+    <label for="rc-expected">Expected changed variables (comma-separated)</label>
+    <input type="text" id="rc-expected" data-bind="reviewcase.expectedChangedVariables" value="${attr(editor.expectedChangedVariables)}" />
+    <label for="rc-forbidden">Forbidden changed variables (comma-separated)</label>
+    <input type="text" id="rc-forbidden" data-bind="reviewcase.forbiddenChangedVariables" value="${attr(editor.forbiddenChangedVariables)}" />
+    <p class="muted">Forbidden defaults to this script's internal/helper candidates, when known — edit freely.</p>
+    <label for="rc-note">Reviewer note (optional)</label>
+    <textarea id="rc-note" data-bind="reviewcase.reviewerNote" placeholder="What did you check, and why does this example prove it?">${escapeHtml(editor.reviewerNote)}</textarea>
+    ${editor.rawGeneratorOutput ? `<p class="muted">Includes the pasted generator output above as a drift-detection snapshot.</p>` : `<p class="muted">No generator output pasted above yet — this case will only check the filled script's changed variables.</p>`}
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn primary" data-action="save-review-case-from-editor">Save review case</button>
+    </div>
+    ${savedNote}
+  </div>`;
 }
 
 function renderActions(): string {
@@ -991,15 +1171,19 @@ function renderActions(): string {
   }
 
   const selectedAction = runnableActions.find((a) => a.actionKey === ab.selectedActionKey) ?? runnableActions[0]!;
-  const selectedVariant = selectedAction.variants.find((v) => v.schemaId === ab.curatedSchemaId) ?? selectedAction.variants[0]!;
+  // A soft preference only — when more than one ready variant shares this
+  // action+target, a better-verified one sorts first as the default, but
+  // every ready variant still appears in the picker below.
+  const rankedVariants = [...selectedAction.variants].sort((a, b) => variantVerificationRank(p, a) - variantVerificationRank(p, b));
+  const selectedVariant = rankedVariants.find((v) => v.schemaId === ab.curatedSchemaId) ?? rankedVariants[0]!;
   const curated = p.curatedSchemas.find((s) => s.id === selectedVariant.schemaId)!;
   const template = toActionTemplateShape(curated);
 
   const actionSelectorHtml = `<label for="ab-action">Action</label><select id="ab-action" data-bind="action.selectedActionKey">${actionOptGroupsHtml(runnableActions, selectedAction.actionKey)}</select>`;
 
-  const variantPickerHtml = selectedAction.variants.length > 1
+  const variantPickerHtml = rankedVariants.length > 1
     ? `<label for="ab-variant">Target variant</label>
-       <select id="ab-variant" data-bind="action.curatedSchemaId">${selectedAction.variants.map((v) => opt(v.schemaId, targetLabel(v.target), selectedVariant.schemaId)).join('')}</select>`
+       <select id="ab-variant" data-bind="action.curatedSchemaId">${rankedVariants.map((v) => opt(v.schemaId, targetLabel(v.target), selectedVariant.schemaId)).join('')}</select>`
     : '';
 
   const curatedByKey = new Map(curated.fields.map((f) => [f.key, f]));
@@ -1032,7 +1216,8 @@ function renderActions(): string {
       ${fieldsHtml}
     </div>
     ${filledScriptCard}
-    ${pasteBackCard(p, ab, template.label)}`;
+    ${pasteBackCard(p, ab, template.label)}
+    ${reviewCaseSectionHtml(curated)}`;
 }
 
 // --- Manage Scripts (developer-only, informational) --------------------------
@@ -1343,10 +1528,13 @@ function reviewedPresetSuggestionHtml(s: ScriptFile, project: Project): string {
   if (candidates.length === 0) return '';
 
   const buttons = candidates
-    .map(
-      (m) =>
-        `<button class="btn small primary" data-action="apply-reviewed-preset" data-id="${attr(s.id)}" data-preset="${attr(m.preset.id)}">Apply "${escapeHtml(m.preset.label)}"</button>`,
-    )
+    .map((m) => {
+      const verification = summarizePresetVerification(m.preset.id, project.schemaReviewCases);
+      const verificationPill = verification === 'no-cases'
+        ? ''
+        : ` <span class="pill status-${verification === 'draft-cases' ? 'draft' : 'reviewed'}">${escapeHtml(verification)}</span>`;
+      return `<button class="btn small primary" data-action="apply-reviewed-preset" data-id="${attr(s.id)}" data-preset="${attr(m.preset.id)}">Apply "${escapeHtml(m.preset.label)}"</button>${verificationPill}`;
+    })
     .join(' ');
   const heading = candidates.length === 1
     ? `Reviewed schema preset available: ${escapeHtml(candidates[0].preset.label)}`
@@ -1726,6 +1914,176 @@ function catalogAuditPanelHtml(project: Project): string {
   </details>`;
 }
 
+// --- Setup: Schema verification panel, grouped by supported action variant --
+
+function variantVerificationStatusLabel(status: ActionVariantVerificationStatus): string {
+  switch (status) {
+    case 'no-cases': return 'No cases';
+    case 'draft-cases': return 'Draft cases';
+    case 'passing': return 'Passing';
+    case 'failing': return 'Failing';
+    case 'accepted': return 'Accepted manually';
+    case 'not-available': return 'Not available';
+  }
+}
+
+function variantVerificationPillClass(status: ActionVariantVerificationStatus): string {
+  switch (status) {
+    case 'passing':
+    case 'accepted':
+      return 'reviewed';
+    case 'failing':
+    case 'not-available':
+      return 'disabled';
+    case 'no-cases':
+    case 'draft-cases':
+      return 'draft';
+  }
+}
+
+/** Every saved review case for one schema/variant, with a live re-check per case and per-case actions. */
+function reviewCasesDetailHtml(project: Project, schemaId: string): string {
+  const schema = project.curatedSchemas.find((s) => s.id === schemaId);
+  if (!schema) return '';
+  const setupError = describeSchemaVerificationSetupError(schema, project);
+  const cases = project.schemaReviewCases.filter((c) => c.schemaId === schemaId);
+  const rows = cases
+    .map((reviewCase) => {
+      const live = verifySchemaReviewCase(project, schema, reviewCase);
+      const liveCell = `<span class="pill status-${live.status === 'passing' ? 'reviewed' : 'disabled'}">${escapeHtml(live.status)}</span>${live.errors.length ? `<div class="muted">${live.errors.map(escapeHtml).join('<br>')}</div>` : ''}`;
+      return `<tr>
+        <td>${reviewCase.reviewerNote ? escapeHtml(reviewCase.reviewerNote) : escapeHtml(reviewCase.id)}</td>
+        <td><span class="pill status-${reviewCase.status === 'accepted' || reviewCase.status === 'passing' ? 'reviewed' : reviewCase.status === 'failing' ? 'disabled' : 'draft'}">${escapeHtml(reviewCase.status)}</span></td>
+        <td>${liveCell}</td>
+        <td>
+          <button class="btn small" data-action="run-review-case" data-id="${attr(reviewCase.id)}">Run</button>
+          ${reviewCase.status !== 'accepted' ? `<button class="btn small" data-action="accept-review-case" data-id="${attr(reviewCase.id)}">Mark accepted</button>` : ''}
+          <button class="btn small" data-action="export-review-case" data-id="${attr(reviewCase.id)}">Export</button>
+          <button class="btn danger small" data-action="delete-review-case" data-id="${attr(reviewCase.id)}">Delete</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+  return `<div class="card">
+    <h4>Review cases for "${escapeHtml(schema.label)}"</h4>
+    ${setupError ? `<p class="muted">⚠ ${escapeHtml(setupError)}</p>` : ''}
+    ${cases.length > 0
+      ? `<table><thead><tr><th>Case</th><th>Stored status</th><th>Live re-check</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="muted">No review cases saved yet — fill and preview this schema/variant in Run Script, then "Save as schema review case."</p>'}
+  </div>`;
+}
+
+/**
+ * Setup's "Schema verification" panel: every supported-action variant
+ * (core/supportedActionRegistry.ts), grouped by action, with its case count
+ * and live verification status. Verifying only ever re-fills a script and
+ * re-parses pasted text (core/schemaVerification.ts) — it never invokes a
+ * generator. Setup/admin only — Run Script never shows this panel.
+ */
+function variantVerificationPanelHtml(project: Project): string {
+  const registry = buildSupportedActionRegistry(project);
+  const variantRows = registry.flatMap((action) => action.variants.map((variant) => ({ action, variant })));
+  if (variantRows.length === 0) return '';
+  const rows = variantRows
+    .map(({ action, variant }) => {
+      const schema = project.curatedSchemas.find((s) => s.id === variant.schemaId);
+      if (!schema) return '';
+      const summary = summarizeVariantVerification(schema, project, project.schemaReviewCases);
+      return `<tr>
+        <td>${escapeHtml(action.label)}</td>
+        <td>${escapeHtml(targetLabel(variant.target))}</td>
+        <td>${variant.scriptFilename ? escapeHtml(variant.scriptFilename) : '—'}</td>
+        <td>${summary.caseCount}</td>
+        <td><span class="pill status-${variantVerificationPillClass(summary.status)}">${escapeHtml(variantVerificationStatusLabel(summary.status))}</span></td>
+        <td>
+          ${summary.caseCount > 0 ? `<button class="btn small" data-action="run-schema-verification" data-id="${attr(schema.id)}">Run verification</button>` : ''}
+          <button class="btn small" data-action="goto-run-script-for-schema" data-id="${attr(schema.id)}">Add review case</button>
+          <button class="btn small" data-action="view-review-cases" data-id="${attr(schema.id)}">View cases</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+  const detail = state.reviewCasesDetailSchemaId ? reviewCasesDetailHtml(project, state.reviewCasesDetailSchemaId) : '';
+  return `<div class="card">
+    <h3>Schema verification <span class="pill">Setup only</span></h3>
+    <p class="muted">Re-check a supported action variant against saved examples instead of re-reviewing it line by line. "Add review case" takes you to Run Script to fill/preview/paste-back and save one. "Not available" means this variant can't be verified right now (detached/missing script/disabled/draft-only) — fix that in Setup first.</p>
+    <table><thead><tr><th>Action</th><th>Target</th><th>Script</th><th>Cases</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    ${detail}
+  </div>`;
+}
+
+// --- Setup: schema family / similar-scripts panel ---------------------------
+
+/** One family's member scripts, each with its own schema status and (for scriptless members) an "Apply schema pattern cautiously" action. */
+function familyDetailHtml(project: Project, scriptId: string): string {
+  const script = project.scripts.find((s) => s.id === scriptId);
+  if (!script) return '';
+  const similar = findSimilarScripts(script, project.scripts);
+  const signature = computeSchemaShapeSignature(script);
+  if (!signature) return '';
+  const reviewedInFamily = [script, ...similar]
+    .map((s) => project.curatedSchemas.find((cs) => cs.scriptId === s.id && cs.status === 'reviewed'))
+    .find((s): s is CuratedActionSchema => Boolean(s));
+
+  const memberRows = [script, ...similar]
+    .map((s) => {
+      const attached = project.curatedSchemas.find((cs) => cs.scriptId === s.id);
+      const statusCell = attached
+        ? `<span class="pill status-${escapeHtml(attached.status)}">${escapeHtml(attached.status)}</span>`
+        : '<span class="muted">no schema</span>';
+      const applyBtn = !attached && reviewedInFamily
+        ? `<button class="btn small primary" data-action="apply-schema-pattern" data-id="${attr(s.id)}" data-schema="${attr(reviewedInFamily.id)}">Apply schema pattern cautiously</button>`
+        : '';
+      return `<tr>
+        <td>${escapeHtml(s.filename)}</td>
+        <td>${statusCell}</td>
+        <td>${applyBtn}</td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<div class="card">
+    <h4>Same candidate shape as ${escapeHtml(script.filename)}</h4>
+    <p class="muted">
+      ${signature.fieldCount} user-facing field(s)${signature.userFacingNames.length ? ': ' + signature.userFacingNames.map(escapeHtml).join(', ') : ''}${signature.inputHints.length ? ' · hints: ' + signature.inputHints.map(escapeHtml).join(', ') : ''}.
+      A shared shape is a review-prioritization hint only — it is never a claim that these scripts do the same thing. Applying a pattern always creates a new draft that still needs its own review.
+    </p>
+    <table><thead><tr><th>Script</th><th>Schema status</th><th></th></tr></thead><tbody>${memberRows}</tbody></table>
+  </div>`;
+}
+
+/**
+ * Setup's "Similar scripts" panel: scripts grouped by candidate shape
+ * (core/schemaFamily.ts), so a reviewer can prioritize scripts that look
+ * alike instead of reviewing hundreds of scripts one at a time. Only shows
+ * families with 2+ members — a family of one has nothing to compare
+ * against. Never claims semantic correctness, and never marks anything
+ * reviewed automatically.
+ */
+function similarScriptsPanelHtml(project: Project): string {
+  const families = groupScriptsByShapeSignature(project.scripts).filter((f) => f.scripts.length > 1 && f.signature.fieldCount > 0);
+  if (families.length === 0) return '';
+  const rows = families
+    .map((family) => {
+      const first = family.scripts[0]!;
+      const names = family.signature.userFacingNames.length ? family.signature.userFacingNames.map(escapeHtml).join(', ') : '—';
+      return `<tr>
+        <td>${names}</td>
+        <td>${family.signature.fieldCount}</td>
+        <td>${family.scripts.length}</td>
+        <td><button class="btn small" data-action="view-similar-scripts" data-id="${attr(first.id)}">Same candidate shape</button></td>
+      </tr>`;
+    })
+    .join('');
+  const detail = state.familyDetailScriptId ? familyDetailHtml(project, state.familyDetailScriptId) : '';
+  return `<div class="card">
+    <h3>Similar scripts <span class="pill">Setup only</span></h3>
+    <p class="muted">Scripts grouped by candidate shape (variable names, @input hints, field count) — a review-prioritization tool, not a claim that similarly-shaped scripts do the same thing.</p>
+    <table><thead><tr><th>Candidate names</th><th>Fields</th><th>Scripts</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    ${detail}
+  </div>`;
+}
+
 function renderScripts(): string {
   const p = state.project!;
   const allRows = buildScriptPackRows(p.scripts, p.curatedSchemas, p.scriptPacks);
@@ -1782,6 +2140,8 @@ function renderScripts(): string {
       </div>
     </div>
     ${compactCatalogHtml(p)}
+    ${variantVerificationPanelHtml(p)}
+    ${similarScriptsPanelHtml(p)}
     ${unattachedHtml}
     <details id="scripts-advanced-details"${state.scriptsAdvancedOpen ? ' open' : ''}>
       <summary class="muted" style="cursor:pointer">Advanced: all scripts (raw text, scanner details, JSON export/import)</summary>
@@ -2126,6 +2486,9 @@ function resetViewState(project: Project): void {
   state.highlightRef = null;
   state.actionBuilder = makeActionBuilderState(project);
   state.schemaEditor = null;
+  state.reviewCaseEditor = null;
+  state.reviewCasesDetailSchemaId = null;
+  state.familyDetailScriptId = null;
   state.scriptsFilter = 'all';
   state.scriptsSearch = '';
   state.scriptsAdvancedOpen = false;
@@ -2654,6 +3017,84 @@ async function handleClick(e: Event): Promise<void> {
     case 'attach-curated-schema':
       if (id) (document.getElementById(`curated-schema-input-${id}`) as HTMLInputElement | null)?.click();
       break;
+    case 'goto-run-script-for-schema': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      const ab = state.actionBuilder;
+      ab.runTarget = schema.target;
+      ab.selectedActionKey = schema.actionKey ?? schema.id;
+      ab.curatedSchemaId = schema.id;
+      const resolved = resolveActionDefinition(ab, p);
+      ab.values = resolved ? defaultActionValues(resolved.template) : {};
+      resetGeneratedOutput(ab);
+      state.screen = 'actions';
+      render();
+      break;
+    }
+    case 'view-review-cases':
+      if (id) state.reviewCasesDetailSchemaId = state.reviewCasesDetailSchemaId === id ? null : id;
+      render();
+      break;
+    case 'run-schema-verification': {
+      if (!p || !id) break;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema) break;
+      for (const reviewCase of p.schemaReviewCases.filter((c) => c.schemaId === id)) {
+        if (reviewCase.status === 'accepted') continue; // a human's explicit override — never silently overwritten by a live check
+        reviewCase.status = verifySchemaReviewCase(p, schema, reviewCase).status;
+      }
+      commit();
+      break;
+    }
+    case 'run-review-case': {
+      if (!p || !id) break;
+      const reviewCase = p.schemaReviewCases.find((c) => c.id === id);
+      const schema = reviewCase?.schemaId ? p.curatedSchemas.find((s) => s.id === reviewCase.schemaId) : undefined;
+      if (!reviewCase || !schema) break;
+      reviewCase.status = verifySchemaReviewCase(p, schema, reviewCase).status;
+      commit();
+      break;
+    }
+    case 'accept-review-case': {
+      if (!p || !id) break;
+      const reviewCase = p.schemaReviewCases.find((c) => c.id === id);
+      if (!reviewCase) break;
+      reviewCase.status = 'accepted';
+      reviewCase.reviewedAt = nowIso();
+      commit();
+      break;
+    }
+    case 'export-review-case': {
+      if (!p || !id) break;
+      const reviewCase = p.schemaReviewCases.find((c) => c.id === id);
+      if (!reviewCase) break;
+      downloadText(`review-case-${reviewCase.id}.json`, exportSchemaReviewCaseJson(reviewCase), 'application/json');
+      break;
+    }
+    case 'delete-review-case': {
+      if (!p || !id) break;
+      const confirmed = window.confirm('Delete this review case? This cannot be undone.');
+      if (!confirmed) break;
+      p.schemaReviewCases = p.schemaReviewCases.filter((c) => c.id !== id);
+      commit();
+      break;
+    }
+    case 'view-similar-scripts':
+      if (id) state.familyDetailScriptId = state.familyDetailScriptId === id ? null : id;
+      render();
+      break;
+    case 'apply-schema-pattern': {
+      if (!p || !id) break;
+      const targetScript = p.scripts.find((s) => s.id === id);
+      const sourceSchemaId = el.dataset.schema;
+      const sourceSchema = sourceSchemaId ? p.curatedSchemas.find((s) => s.id === sourceSchemaId) : undefined;
+      if (!targetScript || !sourceSchema) break;
+      const draft = createDraftSchemaFromFamilyMember(sourceSchema, targetScript);
+      upsertCuratedSchema(p.curatedSchemas, draft);
+      commit();
+      break;
+    }
     case 'create-schema-from-scan': {
       if (!p || !id) break;
       const script = p.scripts.find((s) => s.id === id);
@@ -2686,6 +3127,30 @@ async function handleClick(e: Event): Promise<void> {
       }
       upsertCuratedSchema(p.curatedSchemas, draft);
       editor.savedSchemaId = draft.id;
+      commit();
+      break;
+    }
+    case 'open-review-case-editor': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const resolved = resolveActionDefinition(ab, p);
+      if (!resolved) break;
+      const script = resolved.curated.scriptId ? p.scripts.find((s) => s.id === resolved.curated.scriptId) : undefined;
+      openReviewCaseEditor(resolved.curated, script, ab);
+      render();
+      break;
+    }
+    case 'cancel-review-case-editor':
+      state.reviewCaseEditor = null;
+      render();
+      break;
+    case 'save-review-case-from-editor': {
+      if (!p) break;
+      const editor = state.reviewCaseEditor;
+      if (!editor) break;
+      const reviewCase = buildReviewCaseFromEditor(editor, uid(), nowIso());
+      p.schemaReviewCases.push(reviewCase);
+      editor.savedCaseId = reviewCase.id;
       commit();
       break;
     }
@@ -2829,6 +3294,11 @@ async function handleChange(e: Event): Promise<void> {
   }
   if (bind.startsWith('schema.')) {
     applySchemaEditorBinding(bind, value);
+    render();
+    return;
+  }
+  if (bind.startsWith('reviewcase.')) {
+    applyReviewCaseEditorBinding(bind, value);
     render();
     return;
   }

@@ -23,7 +23,10 @@ import type {
   CuratedActionSchema,
   CuratedSchemaField,
   ActionFieldOption,
+  ActionFieldValue,
   GameTarget,
+  SchemaReviewCase,
+  ParsedBoxNameRow,
 } from '../core/types.js';
 import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/sources.js';
 import { TARGET_GAMES, TARGET_LANGUAGES, TARGET_REVISIONS, UNKNOWN_TARGET } from '../core/gameTarget.js';
@@ -605,6 +608,95 @@ export function importCuratedActionSchemaJson(text: string): CuratedActionSchema
   return repairStaleSchemaFields(parseCuratedActionSchema(parsed, 'root'));
 }
 
+// --- Schema review cases -----------------------------------------------------
+
+const SCHEMA_REVIEW_CASE_STATUSES = ['draft', 'passing', 'failing', 'accepted'] as const;
+
+function asActionFieldValueRecord(v: unknown, path: string): Record<string, ActionFieldValue> {
+  const o = asObject(v, path);
+  const result: Record<string, ActionFieldValue> = {};
+  for (const [key, val] of Object.entries(o)) result[key] = asActionFieldValue(val, `${path}.${key}`);
+  return result;
+}
+
+function asStringRecord(v: unknown, path: string): Record<string, string> {
+  const o = asObject(v, path);
+  const result: Record<string, string> = {};
+  for (const [key, val] of Object.entries(o)) result[key] = asString(val, `${path}.${key}`);
+  return result;
+}
+
+function parseParsedBoxNameRow(v: unknown, path: string): ParsedBoxNameRow {
+  const o = asObject(v, path);
+  return {
+    boxNumber: asNumber(o.boxNumber, `${path}.boxNumber`),
+    rawLine: asString(o.rawLine, `${path}.rawLine`),
+    spacedDisplay: asString(o.spacedDisplay, `${path}.spacedDisplay`),
+    compactText: o.compactText === null ? null : asString(o.compactText, `${path}.compactText`),
+  };
+}
+
+function parseSchemaReviewCase(v: unknown, path: string): SchemaReviewCase {
+  const o = asObject(v, path);
+  const reviewCase: SchemaReviewCase = {
+    id: asString(o.id, `${path}.id`),
+    target: parseGameTargetOrDefault(o.target, `${path}.target`),
+    createdAt: asString(o.createdAt, `${path}.createdAt`),
+    inputValues: o.inputValues !== undefined ? asActionFieldValueRecord(o.inputValues, `${path}.inputValues`) : {},
+    expectedChangedVariables: o.expectedChangedVariables !== undefined
+      ? asStringArray(o.expectedChangedVariables, `${path}.expectedChangedVariables`)
+      : [],
+    forbiddenChangedVariables: o.forbiddenChangedVariables !== undefined
+      ? asStringArray(o.forbiddenChangedVariables, `${path}.forbiddenChangedVariables`)
+      : [],
+    status: asEnum(o.status, SCHEMA_REVIEW_CASE_STATUSES, `${path}.status`),
+  };
+  const schemaId = asOptString(o.schemaId, `${path}.schemaId`);
+  if (schemaId !== undefined) reviewCase.schemaId = schemaId;
+  const presetId = asOptString(o.presetId, `${path}.presetId`);
+  if (presetId !== undefined) reviewCase.presetId = presetId;
+  const actionKey = asOptString(o.actionKey, `${path}.actionKey`);
+  if (actionKey !== undefined) reviewCase.actionKey = actionKey;
+  const variantId = asOptString(o.variantId, `${path}.variantId`);
+  if (variantId !== undefined) reviewCase.variantId = variantId;
+  const scriptId = asOptString(o.scriptId, `${path}.scriptId`);
+  if (scriptId !== undefined) reviewCase.scriptId = scriptId;
+  const scriptFilename = asOptString(o.scriptFilename, `${path}.scriptFilename`);
+  if (scriptFilename !== undefined) reviewCase.scriptFilename = scriptFilename;
+  const scriptRelativePath = asOptString(o.scriptRelativePath, `${path}.scriptRelativePath`);
+  if (scriptRelativePath !== undefined) reviewCase.scriptRelativePath = scriptRelativePath;
+  const reviewedAt = asOptString(o.reviewedAt, `${path}.reviewedAt`);
+  if (reviewedAt !== undefined) reviewCase.reviewedAt = reviewedAt;
+  const reviewerNote = asOptString(o.reviewerNote, `${path}.reviewerNote`);
+  if (reviewerNote !== undefined) reviewCase.reviewerNote = reviewerNote;
+  if (o.expectedFilledAssignments !== undefined) {
+    reviewCase.expectedFilledAssignments = asStringRecord(o.expectedFilledAssignments, `${path}.expectedFilledAssignments`);
+  }
+  const rawGeneratorOutput = asOptString(o.rawGeneratorOutput, `${path}.rawGeneratorOutput`);
+  if (rawGeneratorOutput !== undefined) reviewCase.rawGeneratorOutput = rawGeneratorOutput;
+  if (o.parsedBoxRows !== undefined) {
+    reviewCase.parsedBoxRows = asArray(o.parsedBoxRows, `${path}.parsedBoxRows`).map((r, i) => parseParsedBoxNameRow(r, `${path}.parsedBoxRows[${i}]`));
+  }
+  const generatorOutputHash = asOptString(o.generatorOutputHash, `${path}.generatorOutputHash`);
+  if (generatorOutputHash !== undefined) reviewCase.generatorOutputHash = generatorOutputHash;
+  return reviewCase;
+}
+
+/** Serialize one schema review case for local export only (no network) — never includes any other project data (scripts, other schemas, script packs). */
+export function exportSchemaReviewCaseJson(reviewCase: SchemaReviewCase): string {
+  return JSON.stringify(reviewCase, null, 2);
+}
+
+export function importSchemaReviewCaseJson(text: string): SchemaReviewCase {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('File is not valid JSON.');
+  }
+  return parseSchemaReviewCase(parsed, 'root');
+}
+
 export function parseProject(v: unknown): Project {
   const o = asObject(v, 'root');
   if (o.schemaVersion !== 1) fail('schemaVersion must be 1.');
@@ -630,6 +722,10 @@ export function parseProject(v: unknown): Project {
     // Backwards-compatible: older exports predate script packs.
     scriptPacks: o.scriptPacks !== undefined
       ? asArray(o.scriptPacks, 'scriptPacks').map((s, i) => parseScriptPack(s, i))
+      : [],
+    // Backwards-compatible: older exports predate schema review cases.
+    schemaReviewCases: o.schemaReviewCases !== undefined
+      ? asArray(o.schemaReviewCases, 'schemaReviewCases').map((s, i) => parseSchemaReviewCase(s, `schemaReviewCases[${i}]`))
       : [],
   };
 }

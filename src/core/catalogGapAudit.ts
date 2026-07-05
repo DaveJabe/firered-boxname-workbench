@@ -13,6 +13,7 @@ import {
   type SupportedActionVariant,
   type SupportedActionVariantStatus,
 } from './supportedActionRegistry.js';
+import { summarizeVariantVerification, type ActionVariantVerificationStatus } from './schemaVerification.js';
 
 export type CatalogNeedConfidence = 'high' | 'medium' | 'low';
 
@@ -425,8 +426,8 @@ export interface ActionVariantCatalogAudit {
   catalogNeeds: readonly FieldClassification[];
   /** This variant's own stale-field findings (see findStaleSchemaFields). */
   staleFieldRepairs: readonly StaleFieldFinding[];
-  /** Placeholder until core/schemaVerification.ts (experiment/schema-verification-harness) merges — no live verification data available here yet. */
-  verificationStatus: 'not-available';
+  /** This variant's live verification standing (core/schemaVerification.ts) — "not-available" whenever the schema can't be verified at all right now (detached/missing script/disabled/draft-only), not just when no review case exists. */
+  verificationStatus: ActionVariantVerificationStatus;
 }
 
 export interface ActionCatalogAuditGroup {
@@ -475,6 +476,9 @@ function buildVariantCatalogAudit(
         .map(({ classification }) => classification)
     : [];
   const staleFieldRepairs = audit.staleSchemaFields.filter((f) => f.schemaId === variant.schemaId);
+  const verificationStatus: ActionVariantVerificationStatus = schema
+    ? summarizeVariantVerification(schema, project, project.schemaReviewCases).status
+    : 'not-available';
 
   const result: ActionVariantCatalogAudit = {
     actionKey: action.actionKey,
@@ -485,7 +489,7 @@ function buildVariantCatalogAudit(
     status: variant.status,
     catalogNeeds,
     staleFieldRepairs,
-    verificationStatus: 'not-available',
+    verificationStatus,
   };
   if (variant.scriptFilename) result.scriptFilename = variant.scriptFilename;
   if (variant.relativePath) result.scriptRelativePath = variant.relativePath;

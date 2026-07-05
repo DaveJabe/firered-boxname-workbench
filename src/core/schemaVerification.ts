@@ -6,10 +6,11 @@
 // executes, assembles, or runs a generator itself — verifying a review case
 // is exactly as safe as filling a script and parsing pasted text by hand.
 
-import type { CuratedActionSchema, GeneratorOutputProvenance, Project, SchemaReviewCase } from './types.js';
+import type { CuratedActionSchema, GameTarget, GeneratorOutputProvenance, Project, SchemaReviewCase } from './types.js';
 import { fillScriptFromSchema } from './scriptFiller.js';
 import { parseGeneratorOutput, GENERATOR_OUTPUT_PARSER_VERSION } from './generatorOutputParser.js';
 import { checkTargetCompatibility, targetLabel } from './gameTarget.js';
+import { buildSupportedActionRegistry } from './supportedActionRegistry.js';
 
 export interface SchemaReviewVerificationResult {
   status: 'passing' | 'failing';
@@ -246,4 +247,123 @@ export function summarizePresetVerification(
   if (cases.some((c) => c.status === 'accepted')) return 'accepted';
   if (cases.some((c) => c.status === 'passing')) return 'passing';
   return 'draft-cases';
+}
+
+// --- Batch verification (Setup's "Run all verification cases") -------------
+//
+// Unlike summarizeVariantVerification (one rolled-up status per variant,
+// for the Setup table's "Status" column), this runs and reports on EVERY
+// individual saved review case across the whole project, resolved fresh
+// against current project state each time — for the batch "Run all
+// verification cases" action and its per-case failure report. Purely
+// read-only: it never mutates a SchemaReviewCase's stored `status` — the
+// caller decides whether/how to persist what it learns, the same way the
+// existing single-case "Run verification" click handlers already do.
+
+export type SchemaReviewCaseRunStatus = 'passing' | 'failing' | 'not-available' | 'accepted' | 'draft';
+
+export interface SchemaReviewCaseRunResult {
+  reviewCase: SchemaReviewCase;
+  actionKey?: string;
+  actionLabel?: string;
+  variantId?: string;
+  schemaId?: string;
+  scriptId?: string;
+  target?: GameTarget;
+  scriptFilename?: string;
+  status: SchemaReviewCaseRunStatus;
+  /** Present only when this case was actually live-verified (i.e. status is 'passing' or 'failing'). */
+  verification?: SchemaReviewVerificationResult;
+  /** Present only when status is 'not-available' — why this case couldn't be verified at all. */
+  setupError?: string;
+}
+
+export interface SchemaReviewCaseBatchSummary {
+  total: number;
+  passing: number;
+  failing: number;
+  notAvailable: number;
+  accepted: number;
+  draft: number;
+}
+
+export interface SchemaReviewCaseBatchResult {
+  results: readonly SchemaReviewCaseRunResult[];
+  summary: SchemaReviewCaseBatchSummary;
+}
+
+/**
+ * Run every saved SchemaReviewCase in the project, resolving each one's
+ * schema/script through CURRENT project state (never trusting whatever the
+ * case itself last recorded). Per case:
+ *  - a schema that no longer exists, or that's detached/missing its
+ *    script/disabled/draft-only/target-mismatched (see
+ *    describeSchemaVerificationSetupError) is "not-available" — never
+ *    silently skipped or crashed on;
+ *  - a case explicitly marked "accepted" by a human keeps that status,
+ *    unchecked, the same override rule summarizeVariantVerification uses;
+ *  - a case still in its initial "draft" status (never yet run once by a
+ *    human) is reported as "draft," not force-verified — this batch action
+ *    re-checks cases that have already been vetted at least once, it
+ *    doesn't promote brand-new drafts on a human's behalf;
+ *  - everything else is freshly re-verified via verifySchemaReviewCase.
+ */
+export function runAllSchemaReviewCases(project: Project): SchemaReviewCaseBatchResult {
+  const registry = buildSupportedActionRegistry(project);
+  const variantsBySchemaId = new Map(
+    registry.flatMap((action) => action.variants.map((variant) => [variant.schemaId, { action, variant }] as const)),
+  );
+
+  const results: SchemaReviewCaseRunResult[] = project.schemaReviewCases.map((reviewCase) => {
+    const schema = reviewCase.schemaId ? project.curatedSchemas.find((s) => s.id === reviewCase.schemaId) : undefined;
+
+    if (!schema) {
+      const result: SchemaReviewCaseRunResult = {
+        reviewCase,
+        status: 'not-available',
+        setupError: 'This case\'s schema no longer exists in this project — cannot verify.',
+      };
+      if (reviewCase.schemaId) result.schemaId = reviewCase.schemaId;
+      if (reviewCase.actionKey) result.actionKey = reviewCase.actionKey;
+      result.target = reviewCase.target;
+      if (reviewCase.scriptFilename) result.scriptFilename = reviewCase.scriptFilename;
+      return result;
+    }
+
+    const matchedVariant = variantsBySchemaId.get(schema.id);
+    const base: Omit<SchemaReviewCaseRunResult, 'status'> = {
+      reviewCase,
+      variantId: schema.id,
+      schemaId: schema.id,
+      target: schema.target,
+    };
+    if (schema.actionKey) base.actionKey = schema.actionKey;
+    if (matchedVariant) base.actionLabel = matchedVariant.action.label;
+    if (schema.scriptId) base.scriptId = schema.scriptId;
+    if (schema.scriptFilename) base.scriptFilename = schema.scriptFilename;
+
+    if (reviewCase.status === 'accepted') {
+      return { ...base, status: 'accepted' };
+    }
+    const setupError = describeSchemaVerificationSetupError(schema, project);
+    if (setupError) {
+      return { ...base, status: 'not-available', setupError };
+    }
+    if (reviewCase.status === 'draft') {
+      return { ...base, status: 'draft' };
+    }
+    const verification = verifySchemaReviewCase(project, schema, reviewCase);
+    return { ...base, status: verification.status, verification };
+  });
+
+  const summary: SchemaReviewCaseBatchSummary = {
+    total: results.length,
+    passing: results.filter((r) => r.status === 'passing').length,
+    failing: results.filter((r) => r.status === 'failing').length,
+    notAvailable: results.filter((r) => r.status === 'not-available').length,
+    accepted: results.filter((r) => r.status === 'accepted').length,
+    draft: results.filter((r) => r.status === 'draft').length,
+  };
+
+  return { results, summary };
 }

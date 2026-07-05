@@ -9,6 +9,7 @@ import {
   summarizeAllVariantVerifications,
   summarizePresetVerification,
   describeSchemaVerificationSetupError,
+  runAllSchemaReviewCases,
 } from '../src/core/schemaVerification.js';
 import { GENERATOR_OUTPUT_PARSER_VERSION } from '../src/core/generatorOutputParser.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
@@ -456,5 +457,120 @@ describe('summarizePresetVerification', () => {
   it('only counts cases matching this exact presetId', () => {
     const cases = [makeReviewCase({ id: 'c1', schemaId: undefined, presetId: 'other-preset', status: 'passing' })];
     expect(summarizePresetVerification('some-preset', cases)).toBe('no-cases');
+  });
+});
+
+describe('runAllSchemaReviewCases — batch verification', () => {
+  it('reports "passing" for every case when all cases pass, with a summary matching', () => {
+    const schema1 = makeCleanSchema({ id: 'schema-1' });
+    const schema2 = makeCleanSchema({ id: 'schema-2', target: FR_EN_11 });
+    const project = makeProject(
+      [makeScript()],
+      [schema1, schema2],
+      [
+        makeReviewCase({ id: 'case-1', schemaId: 'schema-1', variantId: 'schema-1', status: 'passing' }),
+        makeReviewCase({ id: 'case-2', schemaId: 'schema-2', variantId: 'schema-2', target: FR_EN_11, status: 'passing' }),
+      ],
+    );
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results.every((r) => r.status === 'passing')).toBe(true);
+    expect(batch.summary).toEqual({ total: 2, passing: 2, failing: 0, notAvailable: 0, accepted: 0, draft: 0 });
+  });
+
+  it('reports a mix of passing and failing cases correctly, each resolved independently', () => {
+    const schema1 = makeCleanSchema({ id: 'schema-1' });
+    const schema2 = makeCleanSchema({ id: 'schema-2', target: FR_EN_11 });
+    const passingCase = makeReviewCase({ id: 'case-1', schemaId: 'schema-1', variantId: 'schema-1', status: 'passing' });
+    const failingCase = makeReviewCase({
+      id: 'case-2', schemaId: 'schema-2', variantId: 'schema-2', target: FR_EN_11, status: 'passing',
+      inputValues: { Move: 5, MoveSlot: 0 }, // MoveSlot won't actually change -> fails live
+    });
+    const project = makeProject([makeScript()], [schema1, schema2], [passingCase, failingCase]);
+    const batch = runAllSchemaReviewCases(project);
+
+    expect(batch.results.find((r) => r.reviewCase.id === 'case-1')!.status).toBe('passing');
+    expect(batch.results.find((r) => r.reviewCase.id === 'case-2')!.status).toBe('failing');
+    expect(batch.summary).toEqual({ total: 2, passing: 1, failing: 1, notAvailable: 0, accepted: 0, draft: 0 });
+  });
+
+  it('a detached schema (no scriptId) becomes "not-available", with a clear setupError', () => {
+    const schema = makeCleanSchema({ scriptId: undefined, scriptFilename: undefined });
+    const project = makeProject([makeScript()], [schema], [makeReviewCase({ status: 'passing' })]);
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results[0]!.status).toBe('not-available');
+    expect(batch.results[0]!.setupError).toMatch(/detached/i);
+    expect(batch.summary.notAvailable).toBe(1);
+  });
+
+  it('a schema whose linked script no longer exists becomes "not-available"', () => {
+    const schema = makeCleanSchema({ scriptId: 'ghost-script' });
+    const project = makeProject([], [schema], [makeReviewCase({ status: 'passing' })]);
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results[0]!.status).toBe('not-available');
+    expect(batch.results[0]!.setupError).toMatch(/no longer exists/i);
+  });
+
+  it('a disabled schema becomes "not-available"', () => {
+    const schema = makeCleanSchema({ status: 'disabled' });
+    const project = makeProject([makeScript()], [schema], [makeReviewCase({ status: 'passing' })]);
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results[0]!.status).toBe('not-available');
+    expect(batch.results[0]!.setupError).toMatch(/disabled/i);
+  });
+
+  it('a case whose schema no longer exists at all (orphaned) also becomes "not-available"', () => {
+    const project = makeProject([makeScript()], [], [makeReviewCase({ schemaId: 'ghost-schema', status: 'passing' })]);
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results[0]!.status).toBe('not-available');
+  });
+
+  it('an "accepted" case keeps that status without being live re-checked, even if it would otherwise fail', () => {
+    const schema = makeCleanSchema();
+    const brokenButAccepted = makeReviewCase({ status: 'accepted', inputValues: { Move: 5, MoveSlot: 0 } });
+    const project = makeProject([makeScript()], [schema], [brokenButAccepted]);
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results[0]!.status).toBe('accepted');
+    expect(batch.results[0]!.verification).toBeUndefined();
+  });
+
+  it('a case still in its initial "draft" status is reported as draft, not force-verified', () => {
+    const schema = makeCleanSchema();
+    const draftCase = makeReviewCase({ status: 'draft' });
+    const project = makeProject([makeScript()], [schema], [draftCase]);
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.results[0]!.status).toBe('draft');
+    expect(batch.results[0]!.verification).toBeUndefined();
+    expect(batch.summary.draft).toBe(1);
+  });
+
+  it('every result carries actionKey/variantId/schemaId/target/scriptFilename so callers can group by any of them', () => {
+    const schema = makeCleanSchema();
+    const project = makeProject([makeScript()], [schema], [makeReviewCase({ status: 'passing' })]);
+    const batch = runAllSchemaReviewCases(project);
+    const result = batch.results[0]!;
+    expect(result.actionKey).toBe('toy-action');
+    expect(result.actionLabel).toBe('Toy schema');
+    expect(result.variantId).toBe('toy-schema');
+    expect(result.schemaId).toBe('toy-schema');
+    expect(result.scriptId).toBe('script-1');
+    expect(result.target).toEqual(FR_EN_10);
+    expect(result.scriptFilename).toBe('toy.txt');
+  });
+
+  it('the summary total always equals the number of saved review cases, regardless of status mix', () => {
+    const schema1 = makeCleanSchema({ id: 'schema-1' });
+    const schema2 = makeCleanSchema({ id: 'schema-2', status: 'disabled' });
+    const project = makeProject(
+      [makeScript()],
+      [schema1, schema2],
+      [
+        makeReviewCase({ id: 'case-1', schemaId: 'schema-1', variantId: 'schema-1', status: 'passing' }),
+        makeReviewCase({ id: 'case-2', schemaId: 'schema-2', variantId: 'schema-2', status: 'accepted' }),
+        makeReviewCase({ id: 'case-3', schemaId: 'schema-2', variantId: 'schema-2', status: 'draft' }),
+      ],
+    );
+    const batch = runAllSchemaReviewCases(project);
+    expect(batch.summary.total).toBe(3);
+    expect(batch.summary.total).toBe(batch.results.length);
   });
 });

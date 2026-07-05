@@ -37,14 +37,18 @@ import {
   isSchemaSelectable,
   supportsRevision,
   upsertCuratedSchema,
-  defaultRunnableSchemas,
-  advancedRunnableSchemas,
   removeCuratedSchema,
   nextDuplicateSchemaId,
   duplicateCuratedSchema,
   detachCuratedSchema,
   countSavedOutputsUsingSchema,
 } from '../core/curatedSchemas.js';
+import {
+  getRunnableActionsForTarget,
+  buildSupportedActionRegistry,
+  type SupportedAction,
+  type SupportedActionVariantStatus,
+} from '../core/supportedActionRegistry.js';
 import { candidateToDraftField, validateDraftSchema, defaultIncludedCandidateNames } from '../core/schemaBuilder.js';
 import { fillScriptFromSchema } from '../core/scriptFiller.js';
 import { parseGeneratorOutput, formatCompactBoxNames, formatRawBoxLines } from '../core/generatorOutputParser.js';
@@ -83,7 +87,6 @@ import {
   TARGET_REVISIONS,
   UNKNOWN_TARGET,
   targetLabel,
-  checkTargetCompatibility,
   isUnknownTarget,
 } from '../core/gameTarget.js';
 import {
@@ -131,6 +134,9 @@ interface PasteBackState {
 
 interface ActionBuilderState {
   revisionLabel: string;
+  /** Which supported action (actionKey) is selected in Run Script's action dropdown. */
+  selectedActionKey: string;
+  /** Which of the selected action's variants (a specific schema id) is selected/resolved. */
   curatedSchemaId: string;
   /** The game/language/revision to run against. Starts Unknown/Mixed — nothing defaults to "exact" against Unknown. */
   runTarget: GameTarget;
@@ -152,6 +158,7 @@ function makePasteBackState(): PasteBackState {
 function makeEmptyActionBuilderState(): ActionBuilderState {
   return {
     revisionLabel: '',
+    selectedActionKey: '',
     curatedSchemaId: '',
     runTarget: UNKNOWN_TARGET,
     values: {},
@@ -167,6 +174,7 @@ function makeEmptyActionBuilderState(): ActionBuilderState {
 function makeActionBuilderState(project: Project): ActionBuilderState {
   return {
     revisionLabel: project.metadata.revisionLabel,
+    selectedActionKey: '',
     curatedSchemaId: '',
     runTarget: UNKNOWN_TARGET,
     values: {},
@@ -360,39 +368,44 @@ function applySchemaFieldBinding(bind: string, candidateKey: string | undefined,
 
 /**
  * Resolve Run Script's currently-selected schema by id exactly — no fallback
- * to "first selectable." Only ever resolves to a schema that's either a
- * default (exact target match) or advanced (structurally runnable, just a
- * different target — the explicit "Use this schema" pick) candidate; draft,
- * disabled, detached, scriptless, fieldless, or Unknown-target schemas are
- * in neither list and so never resolve here, not just "selectable." Which
- * id counts as the sensible default for the current target is decided
- * explicitly by pickDefaultCuratedSchemaId, called whenever the target or
- * workspace changes; this never guesses.
+ * to "first selectable." Only ever resolves to a schema that's a ready,
+ * exact-target-matching variant of some supported action for the current
+ * target (see getRunnableActionsForTarget) — draft, disabled, detached,
+ * scriptless, fieldless, Unknown-target, or different-target schemas never
+ * resolve here. Which action/variant id counts as the sensible default is
+ * decided explicitly whenever the target or workspace changes (see
+ * onRunTargetChanged) or the action/variant selector changes (see
+ * applyActionBinding); this never guesses at render time.
  */
 function resolveActionDefinition(
   ab: ActionBuilderState,
   project: Project,
 ): { template: ActionTemplate; curated: CuratedActionSchema } | null {
-  const candidates = [
-    ...defaultRunnableSchemas(project.curatedSchemas, project, ab.runTarget),
-    ...advancedRunnableSchemas(project.curatedSchemas, project, ab.runTarget),
-  ];
-  const schema = candidates.find((s) => s.id === ab.curatedSchemaId);
-  return schema ? { template: toActionTemplateShape(schema), curated: schema } : null;
+  for (const action of getRunnableActionsForTarget(project, ab.runTarget)) {
+    const variant = action.variants.find((v) => v.schemaId === ab.curatedSchemaId);
+    if (variant) {
+      const schema = project.curatedSchemas.find((s) => s.id === variant.schemaId)!;
+      return { template: toActionTemplateShape(schema), curated: schema };
+    }
+  }
+  return null;
 }
 
-/** The schema id Run Script should default to for this target: the current
- *  id if it's still a default-runnable match, else the first default match,
- *  else none (the empty state / advanced disclosure take over). */
-function pickDefaultCuratedSchemaId(
-  schemas: readonly CuratedActionSchema[],
-  project: Project,
-  runTarget: GameTarget,
-  currentId: string,
-): string {
-  const defaults = defaultRunnableSchemas(schemas, project, runTarget);
-  if (defaults.some((s) => s.id === currentId)) return currentId;
-  return defaults[0]?.id ?? '';
+/** The action/variant Run Script should default to for this target: the
+ *  current selection if it's still a ready, exact-target match, else the
+ *  first runnable action's first variant, else none (the empty state
+ *  takes over). Never a silent guess. */
+function pickDefaultActionSelection(
+  actions: readonly SupportedAction[],
+  currentActionKey: string,
+  currentSchemaId: string,
+): { actionKey: string; schemaId: string } {
+  const currentAction = actions.find((a) => a.actionKey === currentActionKey);
+  const currentVariant = currentAction?.variants.find((v) => v.schemaId === currentSchemaId);
+  if (currentAction && currentVariant) return { actionKey: currentActionKey, schemaId: currentSchemaId };
+  const firstAction = actions[0];
+  if (!firstAction) return { actionKey: '', schemaId: '' };
+  return { actionKey: firstAction.actionKey, schemaId: firstAction.variants[0]!.schemaId };
 }
 
 const state: {
@@ -901,23 +914,19 @@ function curatedFieldExtra(field: CuratedSchemaField | undefined): string {
   </details>`;
 }
 
-function advancedSchemaListHtml(schemas: readonly CuratedActionSchema[], runTarget: GameTarget): string {
-  return schemas
-    .map((s) => {
-      const compat = checkTargetCompatibility(s.target, runTarget);
-      const compatBadge = compat === 'unknown' ? 'warning' : 'error';
-      const compatText = compat === 'unknown' ? 'Unknown/Mixed compatibility' : 'Different target';
-      return `<div class="card" style="margin-top:0.4rem">
-        <div class="row" style="justify-content:space-between">
-          <div class="row">
-            <strong>${escapeHtml(s.label)}</strong>
-            <span class="pill status-${escapeHtml(s.status)}">${escapeHtml(s.status)}</span>
-            <span class="badge ${compatBadge}">${compatText}</span>
-            <span class="muted">${escapeHtml(targetLabel(s.target))}</span>
-          </div>
-          <button class="btn small" data-action="select-advanced-schema" data-id="${attr(s.id)}">Use this schema</button>
-        </div>
-      </div>`;
+/** Action dropdown options, grouped into <optgroup>s by category (files_frlg subfolder), "Other" for uncategorized actions. */
+function actionOptGroupsHtml(actions: readonly SupportedAction[], selectedActionKey: string): string {
+  const byCategory = new Map<string, SupportedAction[]>();
+  for (const action of actions) {
+    const key = action.category ?? 'Other';
+    const group = byCategory.get(key);
+    if (group) group.push(action);
+    else byCategory.set(key, [action]);
+  }
+  return Array.from(byCategory.entries())
+    .map(([category, group]) => {
+      const opts = group.map((a) => opt(a.actionKey, a.label, selectedActionKey)).join('');
+      return `<optgroup label="${attr(category)}">${opts}</optgroup>`;
     })
     .join('');
 }
@@ -930,14 +939,14 @@ function renderActions(): string {
   if (selectable.length === 0) {
     return `<h1>Run Script</h1>
       ${workspaceStatusStripHtml(p)}
-      <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+      <p class="muted">Choose a supported action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
       <div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
         <h3>Get started</h3>
-        <p class="muted">This workspace doesn't have any runnable scripts yet:</p>
+        <p class="muted">This workspace doesn't have any supported actions yet:</p>
         <ol>
           <li>Fetch E-Sh4rk scripts from GitHub (or import your own in Manage Scripts).</li>
           <li>Apply a reviewed preset, or scan a script and review a curated schema yourself.</li>
-          <li>Come back here — Run Script will show it.</li>
+          <li>Come back here — Run Script will show it as a supported action.</li>
         </ol>
         <div class="row">
           <button class="btn primary" data-action="nav" data-screen="scripts">Fetch scripts</button>
@@ -947,50 +956,41 @@ function renderActions(): string {
       </div>`;
   }
 
-  const defaultSchemas = defaultRunnableSchemas(p.curatedSchemas, p, ab.runTarget);
-  const advancedSchemas = advancedRunnableSchemas(p.curatedSchemas, p, ab.runTarget);
-  const resolved = resolveActionDefinition(ab, p);
-
   const targetCard = `<div class="card">
     <h3>Target</h3>
-    <p class="muted">Only reviewed schemas that exactly match this target appear below by default — no silent fallback to a different target.</p>
-    ${isUnknownTarget(ab.runTarget) ? '<p class="muted">Pick a game, language, and revision to see matching schemas.</p>' : ''}
+    <p class="muted">Only supported actions with a reviewed, ready variant for this exact target appear below — no silent fallback to a different target.</p>
+    ${isUnknownTarget(ab.runTarget) ? '<p class="muted">Pick a game, language, and revision to see supported actions.</p>' : ''}
     ${targetSelectsHtml('action.runTarget', ab.runTarget, 'run-target')}
   </div>`;
 
-  const advancedDisclosure = advancedSchemas.length > 0
-    ? `<details style="margin-top:0.5rem">
-        <summary class="muted" style="cursor:pointer">Show ${advancedSchemas.length} other schema(s) (unreviewed or a different target)</summary>
-        ${advancedSchemaListHtml(advancedSchemas, ab.runTarget)}
-      </details>`
-    : '';
+  const runnableActions = getRunnableActionsForTarget(p, ab.runTarget);
 
-  if (!resolved) {
+  if (runnableActions.length === 0) {
     return `<h1>Run Script</h1>
       ${workspaceStatusStripHtml(p)}
-      <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+      <p class="muted">Choose a supported action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
       ${targetCard}
       <div class="card" style="border-color:#e0a458;background:#fffaf2">
-        <p class="muted">No reviewed schema is available for this target.</p>
-        ${advancedDisclosure}
+        <p class="muted">No supported action is ready for this target yet. Review a schema, or apply a reviewed preset for it, in Manage Scripts.</p>
       </div>`;
   }
 
-  const { template, curated } = resolved;
-  const isDefaultChoice = defaultSchemas.some((s) => s.id === curated.id);
-  const schemaOpts = defaultSchemas.map((s) => opt(s.id, s.label, curated.id)).join('');
+  const selectedAction = runnableActions.find((a) => a.actionKey === ab.selectedActionKey) ?? runnableActions[0]!;
+  const selectedVariant = selectedAction.variants.find((v) => v.schemaId === ab.curatedSchemaId) ?? selectedAction.variants[0]!;
+  const curated = p.curatedSchemas.find((s) => s.id === selectedVariant.schemaId)!;
+  const template = toActionTemplateShape(curated);
+
+  const actionSelectorHtml = `<label for="ab-action">Action</label><select id="ab-action" data-bind="action.selectedActionKey">${actionOptGroupsHtml(runnableActions, selectedAction.actionKey)}</select>`;
+
+  const variantPickerHtml = selectedAction.variants.length > 1
+    ? `<label for="ab-variant">Target variant</label>
+       <select id="ab-variant" data-bind="action.curatedSchemaId">${selectedAction.variants.map((v) => opt(v.schemaId, targetLabel(v.target), selectedVariant.schemaId)).join('')}</select>`
+    : '';
+
   const curatedByKey = new Map(curated.fields.map((f) => [f.key, f]));
   const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values, ab.referenceSearch) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
 
-  const curatedStatusLine = `<p class="muted">Status: <span class="pill status-${escapeHtml(curated.status)}">${escapeHtml(curated.status)}</span> · target: ${escapeHtml(targetLabel(curated.target))}${curated.scriptFilename ? ' · from ' + escapeHtml(curated.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`;
-
-  const compatWarning = !isDefaultChoice
-    ? `<p class="badge error" style="display:inline-block;margin-bottom:0.5rem">This schema was chosen explicitly from "other schemas" — its status or target does not exactly match your selected target. Review carefully before relying on it.</p>`
-    : '';
-
-  const schemaSelectorHtml = defaultSchemas.length > 0
-    ? `<label for="ab-curated">Script</label><select id="ab-curated" data-bind="action.curatedSchemaId">${schemaOpts}</select>`
-    : `<p class="muted">Using an explicitly-chosen schema outside the default list for this target (see "other schemas" above).</p>`;
+  const statusLine = `<p class="muted">Target: ${escapeHtml(targetLabel(selectedVariant.target))}${selectedVariant.scriptFilename ? ' · from ' + escapeHtml(selectedVariant.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`;
 
   const linkedScript = curated.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
   const filledScriptCard = linkedScript
@@ -1005,18 +1005,17 @@ function renderActions(): string {
 
   return `<h1>Run Script</h1>
     ${workspaceStatusStripHtml(p)}
-    <p class="muted">Select a script/action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+    <p class="muted">Choose a supported action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
     ${targetCard}
     <div class="card">
       <label for="ab-revision">Revision label</label>
       <input type="text" id="ab-revision" data-bind="action.revisionLabel" value="${attr(ab.revisionLabel)}" placeholder="e.g. Rev 1 (documentation only)" />
-      ${schemaSelectorHtml}
-      ${curatedStatusLine}
-      ${compatWarning}
+      ${actionSelectorHtml}
+      ${variantPickerHtml}
+      ${statusLine}
       <p class="muted">${escapeHtml(curated.description)}</p>
       ${fieldsHtml}
     </div>
-    ${advancedDisclosure}
     ${filledScriptCard}
     ${pasteBackCard(p, ab, template.label)}`;
 }
@@ -1506,61 +1505,85 @@ function compactRowHtml(row: CompactScriptRow, project: Project): string {
 
 const COMPACT_TABLE_HEAD = '<thead><tr><th>Script</th><th>Category</th><th>Target</th><th>Candidates</th><th>Status</th><th></th></tr></thead>';
 
-/**
- * Manage Scripts' default view: four compact sections (Ready / Needs review
- * / No candidate fields / everything else) instead of one giant scanner
- * table. "Advanced: all scripts" (the full per-script cards, raw text,
- * directive/candidate tables, draft schema, JSON export/import) lives in
- * renderScripts()'s own details disclosure, not here.
- */
-function compactCatalogHtml(project: Project): string {
-  if (project.scripts.length === 0) return '';
-  const rows = buildCompactScriptRows(project.scripts, project.curatedSchemas, project.scriptPacks);
-  const ready = rows.filter((r) => r.bucket === 'ready');
-  const needsReview = rows.filter((r) => r.bucket === 'needs-review');
-  const noCandidates = rows.filter((r) => r.bucket === 'no-candidates');
-  const disabledOrIncompatible = rows.filter((r) => r.bucket === 'disabled-or-incompatible');
+/** Human-readable label for one action variant's status — never a raw enum value in the UI. */
+function variantStatusLabel(status: SupportedActionVariantStatus): string {
+  switch (status) {
+    case 'ready': return 'Ready';
+    case 'missing-script': return 'Missing script';
+    case 'needs-review': return 'Needs review';
+    case 'incompatible-target': return 'Target not set';
+    case 'disabled': return 'Disabled';
+  }
+}
 
-  const readyRows = ready
-    .map((row) => {
-      const schema = project.curatedSchemas.find((s) => s.id === row.readySchemaId);
+/** One action's per-variant breakdown — e.g. "FireRed EN 1.0: Ready", "LeafGreen EN 1.1: Missing script" — grouped under one card, never duplicated as separate top-level rows per target. */
+function readyActionCardHtml(action: SupportedAction): string {
+  const variantRows = action.variants
+    .map((v) => {
+      const pillClass = v.status === 'ready' ? 'reviewed' : v.status === 'disabled' ? 'disabled' : 'draft';
+      const actionCell = v.status === 'ready'
+        ? `<button class="btn small" data-action="run-supported-script" data-id="${attr(v.schemaId)}">Run</button>`
+        : v.status === 'needs-review' && v.scriptId
+          ? `<button class="btn small" data-action="open-script" data-id="${attr(v.scriptId)}">Review</button>`
+          : '';
       return `<tr>
-        <td>${schema ? escapeHtml(schema.label) : '—'}</td>
-        <td>${escapeHtml(row.title ?? row.filename)}</td>
-        <td>${escapeHtml(targetLabel(row.target))}</td>
-        <td>${schema?.fields.length ?? row.candidateCount}</td>
-        <td><span class="pill status-reviewed">reviewed</span></td>
-        <td><button class="btn small" data-action="run-supported-script" data-id="${attr(row.readySchemaId ?? '')}">Run</button></td>
+        <td>${escapeHtml(targetLabel(v.target))}</td>
+        <td><span class="pill status-${pillClass}">${escapeHtml(variantStatusLabel(v.status))}</span></td>
+        <td>${actionCell}</td>
       </tr>`;
     })
     .join('');
+  return `<div class="card">
+    <h4>${escapeHtml(action.label)}</h4>
+    ${action.description ? `<p class="muted">${escapeHtml(action.description)}</p>` : ''}
+    <table><thead><tr><th>Target variant</th><th>Status</th><th></th></tr></thead><tbody>${variantRows}</tbody></table>
+  </div>`;
+}
 
-  const hasUnambiguousPresetSomewhere = [...needsReview, ...noCandidates, ...disabledOrIncompatible].some(
+/**
+ * Setup's default view: Ready actions (grouped by actionKey — every target
+ * variant of the same action shown together, never duplicated as separate
+ * top-level rows), Needs review, and Unsupported/no-field scripts, instead
+ * of one giant scanner table. "Advanced: all scripts" (the full per-script
+ * cards, raw text, directive/candidate tables, draft schema, JSON
+ * export/import) lives in renderScripts()'s own details disclosure, not here.
+ */
+function compactCatalogHtml(project: Project): string {
+  if (project.scripts.length === 0) return '';
+  const registry = buildSupportedActionRegistry(project);
+  const readyActions = registry.filter((a) => a.variants.some((v) => v.status === 'ready'));
+  const scriptIdsInReadyActions = new Set(
+    readyActions.flatMap((a) => a.variants.map((v) => v.scriptId).filter((id): id is string => Boolean(id))),
+  );
+
+  const rows = buildCompactScriptRows(project.scripts, project.curatedSchemas, project.scriptPacks);
+  // Folds the old "disabled/incompatible target" bucket into Needs review — Setup only
+  // distinguishes Ready actions / Needs review / Unsupported, plus Advanced for everything else.
+  const needsReview = rows.filter((r) => (r.bucket === 'needs-review' || r.bucket === 'disabled-or-incompatible') && !scriptIdsInReadyActions.has(r.scriptId));
+  const unsupported = rows.filter((r) => r.bucket === 'no-candidates');
+
+  const hasUnambiguousPresetSomewhere = [...needsReview, ...unsupported].some(
     (r) => !!project.scripts.find((s) => s.id === r.scriptId) && unambiguousPresetMatch(project.scripts.find((s) => s.id === r.scriptId)!, project),
   );
 
   return `<div class="card">
-    <h3>Supported scripts</h3>
-    <p class="muted">A script is "Ready" once a reviewed schema with an explicit target is attached to it — apply a reviewed preset, or create and review a curated schema.</p>
+    <h3>Supported actions</h3>
+    <p class="muted">An action becomes "Ready" for a target once a reviewed schema with that exact target is attached to an existing script — apply a reviewed preset, or create and review a curated schema.</p>
     <div class="row filters" role="group" aria-label="Support status">
-      <span class="chip">Ready: ${ready.length}</span>
+      <span class="chip">Ready actions: ${readyActions.length}</span>
       <span class="chip">Needs review: ${needsReview.length}</span>
-      <span class="chip">No candidate fields: ${noCandidates.length}</span>
-      <span class="chip">Disabled/incompatible target: ${disabledOrIncompatible.length}</span>
+      <span class="chip">Unsupported: ${unsupported.length}</span>
     </div>
     ${hasUnambiguousPresetSomewhere ? `<div class="row" style="margin:0.5rem 0"><button class="btn" data-action="apply-all-unambiguous-presets">Apply all unambiguous reviewed presets</button></div>` : ''}
-    <h4>Ready</h4>
-    ${ready.length > 0
-      ? `<table><thead><tr><th>Action</th><th>Script</th><th>Target</th><th>Fields</th><th>Status</th><th></th></tr></thead><tbody>${readyRows}</tbody></table>`
-      : '<p class="muted">No scripts are ready yet. Apply a reviewed schema preset, or create/review a curated schema.</p>'}
+    <h4>Ready actions</h4>
+    ${readyActions.length > 0
+      ? readyActions.map(readyActionCardHtml).join('')
+      : '<p class="muted">No actions are ready yet. Apply a reviewed schema preset, or create/review a curated schema.</p>'}
     ${needsReview.length > 0
       ? `<h4>Needs review</h4><table>${COMPACT_TABLE_HEAD}<tbody>${needsReview.map((r) => compactRowHtml(r, project)).join('')}</tbody></table>`
       : ''}
-    ${noCandidates.length > 0
-      ? `<h4>No candidate fields</h4><table>${COMPACT_TABLE_HEAD}<tbody>${noCandidates.map((r) => compactRowHtml(r, project)).join('')}</tbody></table>`
-      : ''}
-    ${disabledOrIncompatible.length > 0
-      ? `<h4>Disabled / incompatible target</h4><table>${COMPACT_TABLE_HEAD}<tbody>${disabledOrIncompatible.map((r) => compactRowHtml(r, project)).join('')}</tbody></table>`
+    ${unsupported.length > 0
+      ? `<h4>Unsupported (no candidate fields)</h4><table>${COMPACT_TABLE_HEAD}<tbody>${unsupported.map((r) => compactRowHtml(r, project)).join('')}</tbody></table>`
       : ''}
   </div>`;
 }
@@ -1599,9 +1622,9 @@ function renderScripts(): string {
       </div>`
     : '';
 
-  return `<h1>Manage Scripts <span class="pill">developer-only, informational</span></h1>
+  return `<h1>Setup <span class="pill">Manage Scripts</span></h1>
     ${workspaceStatusStripHtml(p)}
-    <p class="muted">The recommended path is to fetch E-Sh4rk scripts from GitHub, review or apply a reviewed schema preset, then run them from Run Script.</p>
+    <p class="muted">Fetch/update scripts, scan them, and apply or review schemas here — then run supported actions from Run Script.</p>
     ${emptyStateHtml}
     <div class="card">
       <h3>Fetch E-Sh4rk scripts from GitHub <span class="pill">recommended</span></h3>
@@ -2124,22 +2147,13 @@ async function handleClick(e: Event): Promise<void> {
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }
-    case 'select-advanced-schema': {
-      if (!p || !id) break;
-      const ab = state.actionBuilder;
-      ab.curatedSchemaId = id;
-      const resolved = resolveActionDefinition(ab, p);
-      ab.values = resolved ? defaultActionValues(resolved.template) : {};
-      resetGeneratedOutput(ab);
-      render();
-      break;
-    }
     case 'run-supported-script': {
       if (!p || !id) break;
       const schema = p.curatedSchemas.find((s) => s.id === id);
       if (!schema) break;
       const ab = state.actionBuilder;
       ab.runTarget = schema.target;
+      ab.selectedActionKey = schema.actionKey ?? schema.id;
       ab.curatedSchemaId = schema.id;
       const resolved = resolveActionDefinition(ab, p);
       ab.values = resolved ? defaultActionValues(resolved.template) : {};
@@ -2691,7 +2705,9 @@ function resetGeneratedOutput(ab: ActionBuilderState): void {
  *  default match (or none) — never silently keep an incompatible selection. */
 function onRunTargetChanged(ab: ActionBuilderState, project: Project | null): void {
   if (!project) return;
-  ab.curatedSchemaId = pickDefaultCuratedSchemaId(project.curatedSchemas, project, ab.runTarget, ab.curatedSchemaId);
+  const picked = pickDefaultActionSelection(getRunnableActionsForTarget(project, ab.runTarget), ab.selectedActionKey, ab.curatedSchemaId);
+  ab.selectedActionKey = picked.actionKey;
+  ab.curatedSchemaId = picked.schemaId;
   const resolved = resolveActionDefinition(ab, project);
   ab.values = resolved ? defaultActionValues(resolved.template) : {};
   resetGeneratedOutput(ab);
@@ -2704,6 +2720,17 @@ function applyActionBinding(bind: string, id: string | undefined, value: string,
     case 'action.revisionLabel':
       ab.revisionLabel = value;
       break;
+    case 'action.selectedActionKey': {
+      ab.selectedActionKey = value;
+      if (project) {
+        const action = getRunnableActionsForTarget(project, ab.runTarget).find((a) => a.actionKey === value);
+        ab.curatedSchemaId = action?.variants[0]?.schemaId ?? '';
+        const resolved = resolveActionDefinition(ab, project);
+        if (resolved) ab.values = defaultActionValues(resolved.template);
+      }
+      resetGeneratedOutput(ab);
+      break;
+    }
     case 'action.curatedSchemaId': {
       ab.curatedSchemaId = value;
       if (project) {

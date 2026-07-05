@@ -11,6 +11,7 @@
 // and this app never looks anything up in a move/item database.
 
 import type { ReviewedSchemaPreset } from '../core/reviewedSchemaPresets.js';
+import { MOVE_SLOT_FIELD_OPTIONS, NPC_FIELD_OPTIONS } from '../core/curatedSchemas.js';
 
 export const REVIEWED_SCHEMA_PRESETS: readonly ReviewedSchemaPreset[] = [
   {
@@ -29,26 +30,29 @@ export const REVIEWED_SCHEMA_PRESETS: readonly ReviewedSchemaPreset[] = [
       {
         key: 'Move',
         label: 'Move',
-        type: 'text',
+        type: 'reference-select',
         required: true,
         variableName: 'Move',
-        helpText: 'Move to teach — enter your own move ID/name. This app does not look moves up in any database.',
+        referenceCatalogId: 'gen3-moves',
+        helpText: 'Move to teach — picked from the local Gen III move catalog. Only the numeric value is ever filled into the script.',
       },
       {
         key: 'MoveSlot',
         label: 'Move slot',
-        type: 'text',
+        type: 'select',
         required: true,
         variableName: 'MoveSlot',
+        options: MOVE_SLOT_FIELD_OPTIONS,
         helpText: "Which of the target Pokémon's move slots to overwrite.",
       },
       {
         key: 'NPC',
         label: 'NPC',
-        type: 'text',
+        type: 'select',
         required: true,
         variableName: 'NPC',
-        helpText: 'Which NPC/Pokémon this applies to — enter your own reference value.',
+        options: NPC_FIELD_OPTIONS,
+        helpText: 'Which NPC/Pokémon this applies to.',
       },
     ],
     sourceNotes: {

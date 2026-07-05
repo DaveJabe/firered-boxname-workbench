@@ -17,6 +17,9 @@ import {
   duplicateCuratedSchema,
   detachCuratedSchema,
   countSavedOutputsUsingSchema,
+  repairStaleSchemaFields,
+  MOVE_SLOT_FIELD_OPTIONS,
+  NPC_FIELD_OPTIONS,
 } from '../src/core/curatedSchemas.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
 import {
@@ -579,5 +582,79 @@ describe('toActionTemplateShape — reference-select fields resolve options from
     });
     const template = toActionTemplateShape(schema);
     expect(template.fields[0].options).toEqual([{ value: 'x', label: 'X' }]);
+  });
+});
+
+describe('repairStaleSchemaFields — one-time local repair for pre-dropdown text fields', () => {
+  function toyField(over: Partial<CuratedActionSchema['fields'][number]> = {}): CuratedActionSchema['fields'][number] {
+    return { key: 'x', label: 'X', type: 'text', required: true, variableName: 'x', ...over };
+  }
+
+  it('upgrades a "Move" text field to reference-select backed by gen3-moves', () => {
+    const schema = makeCuratedSchema({ fields: [toyField({ key: 'Move', label: 'Move', variableName: 'Move' })] });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]).toMatchObject({ type: 'reference-select', referenceCatalogId: 'gen3-moves' });
+  });
+
+  it('upgrades a field with inputHint "move" to reference-select even if its variableName differs', () => {
+    const schema = makeCuratedSchema({ fields: [toyField({ key: 'chosenMove', label: 'Chosen move', variableName: 'chosenMove', inputHint: 'move' })] });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]).toMatchObject({ type: 'reference-select', referenceCatalogId: 'gen3-moves' });
+  });
+
+  it('upgrades an "Item" text field to reference-select backed by gen3-items', () => {
+    const schema = makeCuratedSchema({ fields: [toyField({ key: 'Item', label: 'Item', variableName: 'Item' })] });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]).toMatchObject({ type: 'reference-select', referenceCatalogId: 'gen3-items' });
+  });
+
+  it('upgrades a "MoveSlot" text field to a select with options 0-3', () => {
+    const schema = makeCuratedSchema({ fields: [toyField({ key: 'MoveSlot', label: 'Move slot', variableName: 'MoveSlot' })] });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]!.type).toBe('select');
+    expect(repaired.fields[0]!.options).toEqual(MOVE_SLOT_FIELD_OPTIONS);
+  });
+
+  it('upgrades an "NPC" text field to a select with options 1-3', () => {
+    const schema = makeCuratedSchema({ fields: [toyField({ key: 'NPC', label: 'NPC', variableName: 'NPC' })] });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]!.type).toBe('select');
+    expect(repaired.fields[0]!.options).toEqual(NPC_FIELD_OPTIONS);
+  });
+
+  it('never touches key/label/required/helpText/defaultValue while upgrading a field', () => {
+    const schema = makeCuratedSchema({
+      fields: [toyField({ key: 'Move', label: 'Custom label', variableName: 'Move', required: false, helpText: 'help', defaultValue: 'x' })],
+    });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]).toMatchObject({ key: 'Move', label: 'Custom label', required: false, helpText: 'help', defaultValue: 'x' });
+  });
+
+  it('leaves an already-correctly-typed field completely unchanged (same object reference)', () => {
+    const field = toyField({ key: 'Move', label: 'Move', variableName: 'Move', type: 'reference-select', referenceCatalogId: 'gen3-moves' });
+    const schema = makeCuratedSchema({ fields: [field] });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]).toBe(field);
+    expect(repaired).toBe(schema); // no fields changed -> the whole schema object is returned as-is
+  });
+
+  it('leaves an unrelated field (not Move/Item/MoveSlot/NPC-shaped) unchanged', () => {
+    const schema = makeCuratedSchema({ fields: [toyField({ key: 'widgetCount', label: 'Widget count', variableName: 'widgetCount', type: 'number' })] });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields[0]!.type).toBe('number');
+  });
+
+  it('repairs only the stale fields in a mixed field list, preserving field order', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        toyField({ key: 'Move', label: 'Move', variableName: 'Move' }),
+        toyField({ key: 'MoveSlot', label: 'Move slot', variableName: 'MoveSlot' }),
+        toyField({ key: 'NPC', label: 'NPC', variableName: 'NPC' }),
+        toyField({ key: 'widgetCount', label: 'Widget count', variableName: 'widgetCount', type: 'number' }),
+      ],
+    });
+    const repaired = repairStaleSchemaFields(schema);
+    expect(repaired.fields.map((f) => f.type)).toEqual(['reference-select', 'select', 'select', 'number']);
+    expect(repaired.fields.map((f) => f.variableName)).toEqual(['Move', 'MoveSlot', 'NPC', 'widgetCount']);
   });
 });

@@ -200,3 +200,59 @@ export function advancedRunnableSchemas(
   const defaultIds = new Set(defaultRunnableSchemas(schemas, project, runTarget).map((s) => s.id));
   return schemas.filter((s) => !defaultIds.has(s.id) && isSchemaStructurallyRunnable(s, project));
 }
+
+// --- Repairing stale field types (predates reference-select/select support) -
+
+/** The known allowed move-slot indices for a "teach any move"-shaped script — display-only options, never enforced beyond the dropdown itself. */
+export const MOVE_SLOT_FIELD_OPTIONS: readonly ActionFieldOption[] = [
+  { value: '0', label: '0' },
+  { value: '1', label: '1' },
+  { value: '2', label: '2' },
+  { value: '3', label: '3' },
+];
+
+/** The known allowed NPC/Pokémon slot indices for a "teach any move"-shaped script. */
+export const NPC_FIELD_OPTIONS: readonly ActionFieldOption[] = [
+  { value: '1', label: '1' },
+  { value: '2', label: '2' },
+  { value: '3', label: '3' },
+];
+
+/**
+ * Repair one field that predates this app recognizing a known shape —
+ * e.g. a "Move" field saved as plain text before gen3-moves existed, or
+ * before this specific fix. Only ever upgrades type/options; never touches
+ * key, label, required-ness, helpText, or default value. A field that
+ * doesn't match a known shape (or is already correctly typed) is returned
+ * unchanged — same object, not a copy, so callers can cheaply detect "no
+ * change" via reference equality.
+ */
+function repairStaleSchemaField(field: CuratedSchemaField): CuratedSchemaField {
+  if (field.type !== 'reference-select' && (field.inputHint === 'move' || field.variableName === 'Move')) {
+    return { ...field, type: 'reference-select', referenceCatalogId: 'gen3-moves' };
+  }
+  if (field.type !== 'reference-select' && (field.inputHint === 'item' || field.variableName === 'Item')) {
+    return { ...field, type: 'reference-select', referenceCatalogId: 'gen3-items' };
+  }
+  if (field.variableName === 'MoveSlot' && field.type !== 'select') {
+    return { ...field, type: 'select', options: MOVE_SLOT_FIELD_OPTIONS };
+  }
+  if (field.variableName === 'NPC' && field.type !== 'select') {
+    return { ...field, type: 'select', options: NPC_FIELD_OPTIONS };
+  }
+  return field;
+}
+
+/**
+ * One-time local repair for a curated schema whose fields predate this app
+ * recognizing Move/Item/MoveSlot/NPC shapes as dropdowns rather than plain
+ * text — applied on every project load (see storage.ts's parseProject), not
+ * persisted as a one-off migration script, so it stays correct even for
+ * data saved by an older version of this app. A schema whose fields are
+ * already correctly typed is returned unchanged (same object).
+ */
+export function repairStaleSchemaFields(schema: CuratedActionSchema): CuratedActionSchema {
+  const fields = schema.fields.map(repairStaleSchemaField);
+  const changed = fields.some((f, i) => f !== schema.fields[i]);
+  return changed ? { ...schema, fields } : schema;
+}

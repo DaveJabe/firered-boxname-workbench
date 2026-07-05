@@ -29,6 +29,7 @@ import { SOURCE_TYPES, SOURCE_SCHEMA_VERSION, SOURCE_FIELD_MAX } from '../core/s
 import { TARGET_GAMES, TARGET_LANGUAGES, TARGET_REVISIONS, UNKNOWN_TARGET } from '../core/gameTarget.js';
 import { ESHARK_CATEGORIES, ESHARK_SOURCE_PROFILES } from '../core/esharkSource.js';
 import { REFERENCE_CATALOG_IDS } from '../reference/index.js';
+import { repairStaleSchemaFields } from '../core/curatedSchemas.js';
 
 const DB_NAME = 'firered-research-notebook';
 const STORE = 'projects';
@@ -601,7 +602,7 @@ export function importCuratedActionSchemaJson(text: string): CuratedActionSchema
   } catch {
     throw new Error('File is not valid JSON.');
   }
-  return parseCuratedActionSchema(parsed, 'root');
+  return repairStaleSchemaFields(parseCuratedActionSchema(parsed, 'root'));
 }
 
 export function parseProject(v: unknown): Project {
@@ -619,9 +620,12 @@ export function parseProject(v: unknown): Project {
     projectStatus: asEnum(o.projectStatus, STATUSES, 'projectStatus'),
     // Backwards-compatible: older exports predate the Script Library and have no `scripts` field.
     scripts: o.scripts !== undefined ? asArray(o.scripts, 'scripts').map((s, i) => parseScriptFile(s, i)) : [],
-    // Backwards-compatible: older exports predate curated schemas.
+    // Backwards-compatible: older exports predate curated schemas. Every
+    // parsed schema is also repaired for stale field types here (see
+    // repairStaleSchemaFields) — a one-time-per-load local migration, not
+    // persisted as a separate migration script.
     curatedSchemas: o.curatedSchemas !== undefined
-      ? asArray(o.curatedSchemas, 'curatedSchemas').map((s, i) => parseCuratedActionSchema(s, `curatedSchemas[${i}]`))
+      ? asArray(o.curatedSchemas, 'curatedSchemas').map((s, i) => repairStaleSchemaFields(parseCuratedActionSchema(s, `curatedSchemas[${i}]`)))
       : [],
     // Backwards-compatible: older exports predate script packs.
     scriptPacks: o.scriptPacks !== undefined

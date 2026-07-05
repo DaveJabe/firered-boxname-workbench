@@ -25,7 +25,13 @@ import { missingRequiredActionFields } from './actionInput.js';
 // semicolon), e.g. `Move = 325 @input:move`, so that substituting the value
 // preserves the annotation as trailing content instead of swallowing it —
 // matching the scanner's own INLINE_ANNOTATION recognition.
-const ASSIGNMENT_LINE = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)([^;]*?)(\s*(?:;.*|@input:[a-zA-Z0-9_]+\s*)?)$/;
+//
+// The third group also tolerates an unusual-but-valid `?` marker between the
+// variable name and `=` (e.g. `item_index ? = 1`, see core/scriptScanner.ts's
+// ASSIGNMENT regex) — captured as part of the same blob that gets replayed
+// verbatim into the output line, so the marker and all surrounding spacing
+// are preserved automatically with no other change to the substitution logic.
+const ASSIGNMENT_LINE = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*(?:\?\s*)?=\s*)([^;]*?)(\s*(?:;.*|@input:[a-zA-Z0-9_]+\s*)?)$/;
 
 function formatValue(type: string, value: ActionFieldValue): string {
   if (type === 'text') return `"${String(value).replace(/"/g, '\\"')}"`;

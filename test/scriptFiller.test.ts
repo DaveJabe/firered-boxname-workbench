@@ -84,6 +84,53 @@ describe('fillScriptFromSchema — replacement rules', () => {
   });
 });
 
+describe('fillScriptFromSchema — the unusual "name ? = value" marker assignment', () => {
+  // Harmless, invented toy fixture matching GetAnyItem.txt's real "item_index ? = 1" shape.
+  const MARKER_SCRIPT = ['amount = 999', 'item_index ? = 1 @input:item', '@@', 'PretendBodyLine'].join('\n');
+
+  function makeMarkerSchema(over: Partial<CuratedActionSchema> = {}): CuratedActionSchema {
+    return {
+      id: 'marker-schema', label: 'Toy marker schema', description: 'toy', target: UNKNOWN_TARGET,
+      supportedRevisionLabels: [], status: 'reviewed',
+      fields: [{ key: 'item_index', label: 'Item', type: 'number', required: true, variableName: 'item_index' }],
+      ...over,
+    };
+  }
+
+  it('replaces only the value token, preserving the "?" marker and its surrounding spacing exactly', () => {
+    const result = fillScriptFromSchema(MARKER_SCRIPT, makeMarkerSchema(), { item_index: 13 });
+    expect(result.errors).toEqual([]);
+    const line = result.filledScriptText.split('\n').find((l) => l.startsWith('item_index'));
+    expect(line).toBe('item_index ? = 13 @input:item');
+  });
+
+  it('records exactly one changed line, with the correct before/after text', () => {
+    const result = fillScriptFromSchema(MARKER_SCRIPT, makeMarkerSchema(), { item_index: 13 });
+    expect(result.changedLines).toHaveLength(1);
+    expect(result.changedLines[0]).toMatchObject({
+      variableName: 'item_index',
+      before: 'item_index ? = 1 @input:item',
+      after: 'item_index ? = 13 @input:item',
+    });
+  });
+
+  it('leaves body lines and unmapped header variables untouched', () => {
+    const result = fillScriptFromSchema(MARKER_SCRIPT, makeMarkerSchema(), { item_index: 13 });
+    expect(result.filledScriptText).toContain('amount = 999');
+    const originalBody = MARKER_SCRIPT.split('@@')[1];
+    const filledBody = result.filledScriptText.split('@@')[1];
+    expect(filledBody).toBe(originalBody);
+  });
+
+  it('a normal "name = value" line is completely unaffected by the marker-tolerant regex', () => {
+    const result = fillScriptFromSchema(MARKER_SCRIPT, makeMarkerSchema({
+      fields: [{ key: 'amount', label: 'Amount', type: 'number', required: true, variableName: 'amount' }],
+    }), { amount: 42 });
+    expect(result.errors).toEqual([]);
+    expect(result.filledScriptText).toContain('amount = 42');
+  });
+});
+
 describe('fillScriptFromSchema — rejections', () => {
   it('rejects a missing required value and leaves the script unchanged', () => {
     const result = fillScriptFromSchema(TOY_SCRIPT, makeSchema(), { label: 'NEWVAL' });

@@ -123,6 +123,48 @@ describe('scanScript candidate detection', () => {
   });
 });
 
+describe('scanScript recognizes an unusual "name ? = value" marker assignment', () => {
+  // Harmless, invented toy fixture matching GetAnyItem.txt's real "item_index ? = 1" shape.
+  const MARKER_SCRIPT = ['amount = 999', 'item_index ? = 1 @input:item', '@@', 'PretendBodyLine'].join('\n');
+
+  it('detects "item_index ? = 1" as a candidate at all (not silently dropped)', () => {
+    const scan = scanScript(makeScript(MARKER_SCRIPT), () => ISO);
+    expect(scan.candidates.map((c) => c.name)).toContain('item_index');
+  });
+
+  it('preserves the variable name, default value, and the "?" marker separately', () => {
+    const scan = scanScript(makeScript(MARKER_SCRIPT), () => ISO);
+    const candidate = scan.candidates.find((c) => c.name === 'item_index')!;
+    expect(candidate.name).toBe('item_index');
+    expect(candidate.rawValue).toBe('1');
+    expect(candidate.assignmentMarker).toBe('?');
+  });
+
+  it('preserves the full raw line text', () => {
+    const scan = scanScript(makeScript(MARKER_SCRIPT), () => ISO);
+    const candidate = scan.candidates.find((c) => c.name === 'item_index')!;
+    expect(candidate.rawLine).toBe('item_index ? = 1 @input:item');
+  });
+
+  it('still recognizes the trailing @input:item annotation on a marker line', () => {
+    const scan = scanScript(makeScript(MARKER_SCRIPT), () => ISO);
+    const candidate = scan.candidates.find((c) => c.name === 'item_index')!;
+    expect(candidate.inputHint).toBe('item');
+  });
+
+  it('a normal "name = value" line has no assignmentMarker (undefined, not an empty string)', () => {
+    const scan = scanScript(makeScript(MARKER_SCRIPT), () => ISO);
+    const candidate = scan.candidates.find((c) => c.name === 'amount')!;
+    expect(candidate.assignmentMarker).toBeUndefined();
+  });
+
+  it('preserves a nearby comment on a marker line, same as a normal assignment', () => {
+    const script = makeScript(['flag ? = 1 ; a trailing comment', '@@', 'body'].join('\n'));
+    const scan = scanScript(script, () => ISO);
+    expect(scan.candidates.find((c) => c.name === 'flag')?.nearbyComment).toBe('a trailing comment');
+  });
+});
+
 describe('imported script rawText preservation', () => {
   it('round-trips a script file rawText and notes unchanged through project export/import', () => {
     const project = createProject(

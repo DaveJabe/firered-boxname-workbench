@@ -242,4 +242,58 @@ export const REVIEWED_SCHEMA_PRESETS: readonly ReviewedSchemaPreset[] = [
         'otherwise.',
     },
   },
+  {
+    id: 'get-any-item-firered-english-1-1',
+    actionKey: 'get-any-item',
+    label: 'Get Any Item',
+    description:
+      'Inject a chosen item, at a chosen quantity, into the bottom slot of your PC. Reviewed from GetAnyItem.txt — only the user-facing fields are included.',
+    status: 'reviewed',
+    target: { game: 'FireRed', language: 'English', revision: '1.1' },
+    match: {
+      filenamePattern: 'GetAnyItem.txt',
+      category: 'misc',
+    },
+    fields: [
+      {
+        key: 'item_index',
+        label: 'Item',
+        type: 'reference-select',
+        required: true,
+        variableName: 'item_index',
+        referenceCatalogId: 'gen3-items',
+        helpText: 'Item to inject — picked from the local Gen III item catalog. Only the numeric value is ever filled into the script.',
+      },
+      {
+        key: 'amount',
+        label: 'Amount',
+        type: 'number',
+        required: true,
+        variableName: 'amount',
+        min: 1,
+        max: 65535,
+        helpText: 'Quantity to inject (1-65535, per the script\'s own comment).',
+      },
+      {
+        key: 'inaccurate_emu',
+        label: 'Inaccurate emulator',
+        type: 'select',
+        required: true,
+        variableName: 'inaccurate_emu',
+        options: BOOLEAN_SET_CLEAR_OPTIONS,
+        helpText: 'Set to 1 (Set) if you are using an emulator older than mGBA 0.9, otherwise leave at 0 (Clear).',
+      },
+    ],
+    sourceNotes: {
+      reviewedAt: '2026-07-06T00:00:00.000Z',
+      reviewedFromScriptFilename: 'GetAnyItem.txt',
+      reviewerNote:
+        'item_index, amount, and inaccurate_emu are this script\'s only three header variables — all genuinely user-facing, so nothing is excluded. ' +
+        'item_index is written as "item_index ? = 1" in the real script (an unusual marker between the name and "=") — recognized by the scanner\'s ' +
+        'ASSIGNMENT regex and filled conservatively (the marker and surrounding spacing are preserved verbatim; only the value token after "=" changes), ' +
+        'see core/scriptScanner.ts and core/scriptFiller.ts. This script uses a different injection technique (address relative to pc, no NPC involved) ' +
+        'than the NPC-based presets above, and is a different category ("misc") and author — target (FireRed/English/1.1) is a judgment call following ' +
+        'this repo\'s existing convention for single-variant scripts, not independently confirmed; double-check against your own setup.',
+    },
+  },
 ];

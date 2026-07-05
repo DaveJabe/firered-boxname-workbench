@@ -21,7 +21,12 @@ import type {
 } from './types.js';
 import { splitLines } from './normalize.js';
 
-const ASSIGNMENT = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
+// The optional third group recognizes an unusual-but-valid marker/operator
+// token between the variable name and `=` (e.g. `item_index ? = 1`) — some
+// E-Sh4rk scripts write this instead of the far more common `name = value`.
+// Recorded on the candidate as `assignmentMarker` for review only; it is
+// never evaluated or assigned a meaning by this scanner.
+const ASSIGNMENT = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\?)?\s*=\s*(.*)$/;
 /** A `@key = value` or `@@key = value` header directive — one or two leading `@`s followed by more content.
  *  Distinct from the bare `@@` marker line, which has no `= value` at all. */
 const DIRECTIVE = /^\s*@{1,2}\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/;
@@ -102,7 +107,7 @@ function scanHeaderCandidates(headerLines: string[]): VariableCandidate[] {
 
     const match = ASSIGNMENT.exec(line);
     if (!match) continue;
-    const [, name, rest] = match;
+    const [, name, assignmentMarker, rest] = match;
 
     // Split off a trailing `; comment` first, then an inline `@input:xxx`
     // tag that may follow the value directly with no semicolon at all
@@ -132,10 +137,12 @@ function scanHeaderCandidates(headerLines: string[]): VariableCandidate[] {
       name,
       rawValue,
       line: i + 1,
+      rawLine: line,
       inferredType,
       confidence: inferConfidence(Boolean(annotation), inferredType),
       internal,
     };
+    if (assignmentMarker !== undefined) candidate.assignmentMarker = assignmentMarker;
     if (nearbyComment !== undefined) candidate.nearbyComment = nearbyComment;
     if (annotation !== undefined) candidate.annotation = annotation;
     if (inputHint !== undefined) candidate.inputHint = inputHint;

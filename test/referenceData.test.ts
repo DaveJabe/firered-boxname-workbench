@@ -63,10 +63,10 @@ describe('referenceEntryLabel', () => {
   });
 });
 
-describe('gen3-items catalog (real, checked-in, partial)', () => {
-  it('is registered under id "gen3-items" and marked partial', () => {
+describe('gen3-items catalog (real, checked-in, complete)', () => {
+  it('is registered under id "gen3-items" and marked complete (not partial)', () => {
     expect(GEN3_ITEMS_CATALOG.id).toBe('gen3-items');
-    expect(GEN3_ITEMS_CATALOG.partial).toBe(true);
+    expect(GEN3_ITEMS_CATALOG.partial).toBe(false);
     expect(GEN3_ITEMS_CATALOG.entries.length).toBeGreaterThan(0);
   });
 
@@ -76,10 +76,22 @@ describe('gen3-items catalog (real, checked-in, partial)', () => {
     expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 13)?.name).toBe('Potion');
   });
 
+  it('looks up known entries from the newly completed range (TMs, key items, berries)', () => {
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 289)?.name).toBe('TM01');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 338)?.name).toBe('TM50');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 133)?.name).toBe('Cheri Berry');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 360)?.name).toBe('Bicycle');
+  });
+
   it('searches by name', () => {
     const results = searchReferenceEntries(GEN3_ITEMS_CATALOG, 'potion');
     expect(results.some((e) => e.name === 'Potion')).toBe(true);
     expect(results.some((e) => e.name === 'Super Potion')).toBe(true);
+  });
+
+  it('searches by hex value', () => {
+    const results = searchReferenceEntries(GEN3_ITEMS_CATALOG, '0x121');
+    expect(results.map((e) => e.name)).toEqual(['TM01']);
   });
 
   it('every entry has a decimal value, a name, and a hex string', () => {
@@ -89,12 +101,22 @@ describe('gen3-items catalog (real, checked-in, partial)', () => {
       expect(entry.hex).toMatch(/^0x[0-9A-F]+$/);
     }
   });
+
+  it('has no duplicate numeric values', () => {
+    const values = GEN3_ITEMS_CATALOG.entries.map((e) => e.value);
+    expect(new Set(values).size).toBe(values.length);
+  });
+
+  it('is sorted ascending by numeric value', () => {
+    const values = GEN3_ITEMS_CATALOG.entries.map((e) => e.value);
+    expect(values).toEqual([...values].sort((a, b) => a - b));
+  });
 });
 
-describe('gen3-moves catalog (real, checked-in, partial)', () => {
-  it('is registered under id "gen3-moves" and marked partial', () => {
+describe('gen3-moves catalog (real, checked-in, complete)', () => {
+  it('is registered under id "gen3-moves" and marked complete (not partial)', () => {
     expect(GEN3_MOVES_CATALOG.id).toBe('gen3-moves');
-    expect(GEN3_MOVES_CATALOG.partial).toBe(true);
+    expect(GEN3_MOVES_CATALOG.partial).toBe(false);
   });
 
   it('looks up a few known stable entries by numeric value', () => {
@@ -103,14 +125,41 @@ describe('gen3-moves catalog (real, checked-in, partial)', () => {
     expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 85)?.name).toBe('Thunderbolt');
   });
 
+  it('looks up known entries from the newly completed range (Gen II/III originals)', () => {
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 101)?.name).toBe('Night Shade');
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 252)?.name).toBe('Fake Out');
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 354)?.name).toBe('Psycho Boost');
+  });
+
+  it('resolves Charm, Moonlight, and Sweet Kiss to their Generation III type/category (Normal), not modern Fairy typing', () => {
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 204)?.category).toBe('Normal');
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 236)?.category).toBe('Normal');
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 186)?.category).toBe('Normal');
+  });
+
+  it('still finds Charm, Moonlight, and Sweet Kiss when searching "fairy", but only via aliases, never via category', () => {
+    const results = searchReferenceEntries(GEN3_MOVES_CATALOG, 'fairy');
+    expect(results.map((e) => e.name).sort()).toEqual(['Charm', 'Moonlight', 'Sweet Kiss']);
+    for (const entry of results) {
+      expect(entry.category).toBe('Normal');
+      expect(entry.aliases).toContain('fairy');
+    }
+  });
+
   it('searches by name', () => {
     const results = searchReferenceEntries(GEN3_MOVES_CATALOG, 'thunder');
     expect(results.map((e) => e.name)).toEqual(expect.arrayContaining(['Thunder Punch', 'Thunderbolt', 'Thunder Wave', 'Thunder Shock', 'Thunder']));
   });
 
-  it('every entry has a unique numeric value', () => {
+  it('has no duplicate numeric values', () => {
     const values = GEN3_MOVES_CATALOG.entries.map((e) => e.value);
     expect(new Set(values).size).toBe(values.length);
+  });
+
+  it('is sorted ascending by numeric value, covering the full 1-354 range with no gaps', () => {
+    const values = GEN3_MOVES_CATALOG.entries.map((e) => e.value);
+    expect(values).toEqual([...values].sort((a, b) => a - b));
+    expect(values).toEqual(Array.from({ length: 354 }, (_, i) => i + 1));
   });
 });
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { ReferenceCatalog } from '../src/core/referenceData.js';
 import { lookupReferenceEntry, searchReferenceEntries, referenceEntryLabel } from '../src/core/referenceData.js';
-import { GEN3_ITEMS_CATALOG, GEN3_MOVES_CATALOG, REFERENCE_CATALOGS, REFERENCE_CATALOG_IDS, getReferenceCatalog } from '../src/reference/index.js';
+import { GEN3_ITEMS_CATALOG, GEN3_MOVES_CATALOG, GEN3_SPECIES_CATALOG, REFERENCE_CATALOGS, REFERENCE_CATALOG_IDS, getReferenceCatalog } from '../src/reference/index.js';
 
 const TOY_CATALOG: ReferenceCatalog = {
   id: 'gen3-items',
@@ -163,15 +163,62 @@ describe('gen3-moves catalog (real, checked-in, complete)', () => {
   });
 });
 
-describe('reference catalog registry', () => {
-  it('registers gen3-items and gen3-moves as real, non-empty catalogs', () => {
-    expect(REFERENCE_CATALOGS['gen3-items'].entries.length).toBeGreaterThan(0);
-    expect(REFERENCE_CATALOGS['gen3-moves'].entries.length).toBeGreaterThan(0);
+describe('gen3-species catalog (real, checked-in, complete)', () => {
+  it('is registered under id "gen3-species" and marked complete (not partial)', () => {
+    expect(GEN3_SPECIES_CATALOG.id).toBe('gen3-species');
+    expect(GEN3_SPECIES_CATALOG.partial).toBe(false);
+    expect(GEN3_SPECIES_CATALOG.entries.length).toBeGreaterThan(0);
   });
 
-  it('registers the newer species/abilities/natures/types/flags/vars/maps-warps/trainers ids as stub (zero-entry) catalogs, clearly marked not yet implemented', () => {
+  it('looks up a few known stable entries by numeric (internal index) value', () => {
+    expect(lookupReferenceEntry(GEN3_SPECIES_CATALOG, 1)?.name).toBe('Bulbasaur');
+    expect(lookupReferenceEntry(GEN3_SPECIES_CATALOG, 25)?.name).toBe('Pikachu');
+    expect(lookupReferenceEntry(GEN3_SPECIES_CATALOG, 151)?.name).toBe('Mew');
+  });
+
+  it('looks up known entries where the internal index diverges from the National Dex number (the Hoenn range)', () => {
+    // Treecko is National Dex #252, but FireRed/LeafGreen's own internal species index is 277.
+    const treecko = lookupReferenceEntry(GEN3_SPECIES_CATALOG, 277);
+    expect(treecko?.name).toBe('Treecko');
+    expect(treecko?.nationalDexNumber).toBe(252);
+  });
+
+  it('searches by name', () => {
+    const results = searchReferenceEntries(GEN3_SPECIES_CATALOG, 'pikachu');
+    expect(results.map((e) => e.name)).toEqual(['Pikachu']);
+  });
+
+  it('searches by numeric (internal index) string', () => {
+    const results = searchReferenceEntries(GEN3_SPECIES_CATALOG, '151');
+    expect(results.some((e) => e.name === 'Mew')).toBe(true);
+  });
+
+  it('has no duplicate numeric values', () => {
+    const values = GEN3_SPECIES_CATALOG.entries.map((e) => e.value);
+    expect(new Set(values).size).toBe(values.length);
+  });
+
+  it('has no duplicate canonical names', () => {
+    const names = GEN3_SPECIES_CATALOG.entries.map((e) => e.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('is sorted ascending by numeric value', () => {
+    const values = GEN3_SPECIES_CATALOG.entries.map((e) => e.value);
+    expect(values).toEqual([...values].sort((a, b) => a - b));
+  });
+});
+
+describe('reference catalog registry', () => {
+  it('registers gen3-items, gen3-moves, and gen3-species as real, non-empty catalogs', () => {
+    expect(REFERENCE_CATALOGS['gen3-items'].entries.length).toBeGreaterThan(0);
+    expect(REFERENCE_CATALOGS['gen3-moves'].entries.length).toBeGreaterThan(0);
+    expect(REFERENCE_CATALOGS['gen3-species'].entries.length).toBeGreaterThan(0);
+  });
+
+  it('registers the remaining abilities/natures/types/flags/vars/maps-warps/trainers ids as stub (zero-entry) catalogs, clearly marked not yet implemented', () => {
     const stubIds = [
-      'gen3-species', 'gen3-abilities', 'gen3-natures', 'gen3-types',
+      'gen3-abilities', 'gen3-natures', 'gen3-types',
       'frlg-flags', 'frlg-vars', 'frlg-maps-warps', 'frlg-trainers',
     ] as const;
     for (const id of stubIds) {

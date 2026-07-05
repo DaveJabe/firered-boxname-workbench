@@ -82,6 +82,15 @@ import { REVIEWED_SCHEMA_PRESETS } from '../templates/reviewed-schema-presets.js
 import { referenceEntryLabel } from '../core/referenceData.js';
 import { REFERENCE_CATALOGS, REFERENCE_CATALOG_IDS, getReferenceCatalog } from '../reference/index.js';
 import {
+  buildCatalogGapAudit,
+  exportCatalogGapAuditJson,
+  applyStaleFieldRepair,
+  groupCatalogAuditBySupportedAction,
+  type FieldClassification,
+  type StaleFieldFinding,
+  type ActionVariantCatalogAudit,
+} from '../core/catalogGapAudit.js';
+import {
   TARGET_GAMES,
   TARGET_LANGUAGES,
   TARGET_REVISIONS,
@@ -434,6 +443,10 @@ const state: {
    * clicks via a native 'toggle' event listener (see initEventListeners).
    */
   scriptsAdvancedOpen: boolean;
+  /** Setup "Catalog Audit" disclosure — same persisted-open-state pattern as scriptsAdvancedOpen. */
+  catalogAuditOpen: boolean;
+  /** Setup "Catalog Audit": finding keys the user has explicitly marked ignored/manual-only this session (not persisted to the project). */
+  catalogAuditIgnored: Set<string>;
   /** Manage Scripts: target metadata to apply to the next imported script folder. */
   pendingPackTarget: GameTarget;
   pendingPackTargetNotes: string;
@@ -456,6 +469,8 @@ const state: {
   scriptsFilter: 'all',
   scriptsSearch: '',
   scriptsAdvancedOpen: false,
+  catalogAuditOpen: false,
+  catalogAuditIgnored: new Set(),
   pendingPackTarget: UNKNOWN_TARGET,
   pendingPackTargetNotes: '',
   pendingSourceProfile: 'generic',
@@ -1588,6 +1603,129 @@ function compactCatalogHtml(project: Project): string {
   </div>`;
 }
 
+/** A variant's own catalog needs, as a short "variable → catalog" summary list. */
+function catalogNeedsSummaryHtml(needs: readonly FieldClassification[]): string {
+  if (needs.length === 0) return '<span class="muted">—</span>';
+  return needs.map((n) => `${escapeHtml(n.variableName)} → ${escapeHtml(n.catalogId ?? '?')}`).join(', ');
+}
+
+/** A variant's own stale-field repair suggestions, each with its own "Repair" button (never applied without this explicit per-field confirm). */
+function variantStaleFieldRepairsHtml(schemaId: string, repairs: readonly StaleFieldFinding[]): string {
+  const visible = repairs.filter((f) => !state.catalogAuditIgnored.has(`stale:${f.schemaId}:${f.classification.variableName}`));
+  if (visible.length === 0) return '<span class="muted">—</span>';
+  return visible
+    .map((f) => {
+      const afterDescription = f.suggestedType === 'reference-select'
+        ? `reference-select (${f.classification.catalogId})`
+        : `select (${f.classification.boundedPresetId})`;
+      return `${escapeHtml(f.classification.variableName)}: ${escapeHtml(f.currentType)} → ${escapeHtml(afterDescription)}
+        <button class="btn small primary" data-action="repair-stale-field" data-id="${attr(schemaId)}" data-variable="${attr(f.classification.variableName)}">Repair</button>`;
+    })
+    .join('<br>');
+}
+
+const ACTION_VARIANT_AUDIT_TABLE_HEAD =
+  '<thead><tr><th>Action</th><th>Target</th><th>Script</th><th>Schema id</th><th>Status</th><th>Catalog needs</th><th>Stale field repairs</th><th>Verification</th></tr></thead>';
+
+/** One row for a supported-action variant's catalog audit — used both grouped (Ready supported actions) and flat (variants with gaps). */
+function actionVariantAuditRowHtml(v: ActionVariantCatalogAudit): string {
+  const statusPillClass = v.status === 'ready' ? 'reviewed' : v.status === 'disabled' ? 'disabled' : 'draft';
+  return `<tr>
+    <td>${escapeHtml(v.actionLabel)}</td>
+    <td>${escapeHtml(targetLabel(v.target))}</td>
+    <td>${v.scriptFilename ? escapeHtml(v.scriptFilename) : '—'}</td>
+    <td><code>${escapeHtml(v.schemaId)}</code></td>
+    <td><span class="pill status-${statusPillClass}">${escapeHtml(v.status)}</span></td>
+    <td>${catalogNeedsSummaryHtml(v.catalogNeeds)}</td>
+    <td>${variantStaleFieldRepairsHtml(v.schemaId, v.staleFieldRepairs)}</td>
+    <td><span class="muted">${escapeHtml(v.verificationStatus)}</span></td>
+  </tr>`;
+}
+
+/**
+ * Setup/Advanced-only "Catalog Audit" panel — grouped around the
+ * supported-action/variant model (core/supportedActionRegistry.ts):
+ * Ready supported actions, action variants with missing catalog coverage,
+ * unsupported scripts, and unknown/manual-review fields. Built entirely
+ * from already-known project data and the local reference-catalog/
+ * bounded-preset registries — never fetches data, never invokes a
+ * generator, never silently rewrites a schema. Never shown in Run Script.
+ */
+function catalogAuditPanelHtml(project: Project): string {
+  const audit = buildCatalogGapAudit(project, nowIso);
+  const grouped = groupCatalogAuditBySupportedAction(project, audit);
+  const ignored = state.catalogAuditIgnored;
+
+  const readyActionsHtml = grouped.readyActions
+    .map(
+      (group) => `<div class="card ext-tool">
+        <h5>${escapeHtml(group.actionLabel)}</h5>
+        <table>${ACTION_VARIANT_AUDIT_TABLE_HEAD}<tbody>${group.variants.map(actionVariantAuditRowHtml).join('')}</tbody></table>
+      </div>`,
+    )
+    .join('');
+
+  const variantsWithGapsRows = grouped.variantsWithGaps.map(actionVariantAuditRowHtml).join('');
+
+  const unsupportedScriptsRows = grouped.unsupportedScripts
+    .filter((s) => !ignored.has(`unsupported:${s.scriptId}`))
+    .map(
+      (s) => `<tr>
+        <td>${escapeHtml(s.scriptFilename)}</td>
+        <td>${catalogNeedsSummaryHtml(s.catalogNeeds)}</td>
+        <td>
+          <button class="btn small" data-action="open-script" data-id="${attr(s.scriptId)}">Open script review</button>
+          <button class="btn small" data-action="ignore-catalog-finding" data-id="unsupported:${attr(s.scriptId)}">Mark ignored</button>
+        </td>
+      </tr>`,
+    )
+    .join('');
+
+  const unknownFieldsRows = grouped.unknownFields
+    .filter((f) => !ignored.has(`unknown:${f.scriptId}:${f.variableName}`))
+    .map((f) => {
+      const key = `unknown:${f.scriptId}:${f.variableName}`;
+      return `<tr>
+        <td>${escapeHtml(f.scriptFilename ?? f.scriptId ?? '—')}</td>
+        <td>${escapeHtml(f.variableName)}</td>
+        <td>${escapeHtml(f.reason)}</td>
+        <td>
+          ${f.scriptId ? `<button class="btn small" data-action="open-script" data-id="${attr(f.scriptId)}">Open script review</button>` : ''}
+          <button class="btn small" data-action="ignore-catalog-finding" data-id="${attr(key)}">Mark ignored</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<details id="catalog-audit-details"${state.catalogAuditOpen ? ' open' : ''}>
+    <summary class="muted" style="cursor:pointer">Catalog Audit <span class="pill">Setup/Advanced only</span></summary>
+    <div class="card">
+      <p class="muted">A data-driven, review-prioritization report — never a claim of semantic correctness, never a silent rewrite. Generated ${escapeHtml(audit.generatedAt)} from ${audit.scannedScriptCount}/${audit.scriptCount} scanned scripts.</p>
+      <div class="row" style="margin-bottom:0.5rem">
+        <button class="btn" data-action="export-catalog-audit">Export audit JSON</button>
+      </div>
+
+      <h4>Ready supported actions</h4>
+      ${readyActionsHtml || '<p class="muted">No supported actions are ready yet.</p>'}
+
+      <h4>Action variants with missing catalog coverage</h4>
+      ${variantsWithGapsRows
+        ? `<table>${ACTION_VARIANT_AUDIT_TABLE_HEAD}<tbody>${variantsWithGapsRows}</tbody></table>`
+        : '<p class="muted">No action variant currently has a catalog need or stale field.</p>'}
+
+      <h4>Unsupported scripts</h4>
+      ${unsupportedScriptsRows
+        ? `<table><thead><tr><th>Script</th><th>Catalog needs</th><th></th></tr></thead><tbody>${unsupportedScriptsRows}</tbody></table>`
+        : '<p class="muted">Every script has a curated schema attached.</p>'}
+
+      <h4>Unknown / manual-review fields</h4>
+      ${unknownFieldsRows
+        ? `<table><thead><tr><th>Script</th><th>Variable</th><th>Reason</th><th></th></tr></thead><tbody>${unknownFieldsRows}</tbody></table>`
+        : '<p class="muted">No unrecognized fields right now.</p>'}
+    </div>
+  </details>`;
+}
+
 function renderScripts(): string {
   const p = state.project!;
   const allRows = buildScriptPackRows(p.scripts, p.curatedSchemas, p.scriptPacks);
@@ -1650,6 +1788,7 @@ function renderScripts(): string {
       ${managementHtml}
       ${cardsHtml}
     </details>
+    ${catalogAuditPanelHtml(p)}
     <details>
       <summary class="muted" style="cursor:pointer">Advanced / manual import — for offline use or a pinned local copy</summary>
       <p class="muted">Fetching from GitHub above is the recommended way to get E-Sh4rk scripts. Use local import only if you're offline, want a specific pinned copy, or are working with scripts that aren't on GitHub.</p>
@@ -1990,6 +2129,8 @@ function resetViewState(project: Project): void {
   state.scriptsFilter = 'all';
   state.scriptsSearch = '';
   state.scriptsAdvancedOpen = false;
+  state.catalogAuditOpen = false;
+  state.catalogAuditIgnored.clear();
   state.pendingPackTarget = UNKNOWN_TARGET;
   state.pendingPackTargetNotes = '';
   state.pendingSourceProfile = 'generic';
@@ -2405,6 +2546,35 @@ async function handleClick(e: Event): Promise<void> {
       const schema = buildDraftActionSchema(script, script.lastScan, nowIso);
       const base = script.filename.replace(/\.txt$/i, '') || 'script';
       downloadText(`${base}-draft-schema.json`, exportDraftActionSchemaJson(schema), 'application/json');
+      break;
+    }
+    case 'export-catalog-audit': {
+      if (!p) break;
+      const audit = buildCatalogGapAudit(p, nowIso);
+      downloadText('catalog-gap-audit.json', exportCatalogGapAuditJson(audit), 'application/json');
+      break;
+    }
+    case 'ignore-catalog-finding':
+      if (id) state.catalogAuditIgnored.add(id);
+      render();
+      break;
+    case 'repair-stale-field': {
+      if (!p || !id) break;
+      const variableName = el.dataset.variable;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema || !variableName) break;
+      const audit = buildCatalogGapAudit(p, nowIso);
+      const finding = audit.staleSchemaFields.find((f) => f.schemaId === id && f.classification.variableName === variableName);
+      if (!finding) break;
+      const afterDescription = finding.suggestedType === 'reference-select'
+        ? `reference-select (catalog: ${finding.classification.catalogId})`
+        : `select (${finding.classification.boundedPresetId})`;
+      const confirmed = window.confirm(
+        `Repair "${variableName}" on "${schema.label}"?\n\nBefore: ${finding.currentType}\nAfter: ${afterDescription}\n\nThis only changes this one field's type/options — nothing else about the schema.`,
+      );
+      if (!confirmed) break;
+      upsertCuratedSchema(p.curatedSchemas, applyStaleFieldRepair(schema, finding));
+      commit();
       break;
     }
     case 'export-reviewed-preset': {
@@ -3155,6 +3325,7 @@ export async function init(): Promise<void> {
     (e) => {
       const el = e.target as HTMLElement;
       if (el.id === 'scripts-advanced-details') state.scriptsAdvancedOpen = (el as HTMLDetailsElement).open;
+      if (el.id === 'catalog-audit-details') state.catalogAuditOpen = (el as HTMLDetailsElement).open;
     },
     true,
   );

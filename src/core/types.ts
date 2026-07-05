@@ -227,11 +227,23 @@ export type ActionFieldType = 'text' | 'number' | 'select' | 'checkbox' | 'refer
 
 /**
  * Which local static reference-data catalog backs a 'reference-select'
- * field. See core/referenceData.ts. Extend this union (and register a new
- * catalog in src/reference/index.ts) to add flags/variables/maps/species/
- * abilities later.
+ * field. See core/referenceData.ts. gen3-species/gen3-abilities/gen3-natures/
+ * gen3-types/frlg-flags/frlg-vars/frlg-maps-warps/frlg-trainers are
+ * registered (so schemas can reference them and the catalog-gap audit can
+ * report on them) but are stub/empty catalogs today — see each file in
+ * src/reference/ for what's actually implemented vs. not yet.
  */
-export type ReferenceCatalogId = 'gen3-items' | 'gen3-moves';
+export type ReferenceCatalogId =
+  | 'gen3-items'
+  | 'gen3-moves'
+  | 'gen3-species'
+  | 'gen3-abilities'
+  | 'gen3-natures'
+  | 'gen3-types'
+  | 'frlg-flags'
+  | 'frlg-vars'
+  | 'frlg-maps-warps'
+  | 'frlg-trainers';
 
 /** A neutral, user-facing option for a 'select' field. */
 export interface ActionFieldOption {

@@ -115,12 +115,36 @@ describe('gen3-moves catalog (real, checked-in, partial)', () => {
 });
 
 describe('reference catalog registry', () => {
-  it('registers exactly gen3-items and gen3-moves for now', () => {
-    expect(REFERENCE_CATALOG_IDS.sort()).toEqual(['gen3-items', 'gen3-moves']);
+  it('registers gen3-items and gen3-moves as real, non-empty catalogs', () => {
+    expect(REFERENCE_CATALOGS['gen3-items'].entries.length).toBeGreaterThan(0);
+    expect(REFERENCE_CATALOGS['gen3-moves'].entries.length).toBeGreaterThan(0);
+  });
+
+  it('registers the newer species/abilities/natures/types/flags/vars/maps-warps/trainers ids as stub (zero-entry) catalogs, clearly marked not yet implemented', () => {
+    const stubIds = [
+      'gen3-species', 'gen3-abilities', 'gen3-natures', 'gen3-types',
+      'frlg-flags', 'frlg-vars', 'frlg-maps-warps', 'frlg-trainers',
+    ] as const;
+    for (const id of stubIds) {
+      const catalog = REFERENCE_CATALOGS[id];
+      expect(catalog.entries).toEqual([]);
+      expect(catalog.partial).toBe(true);
+      expect(catalog.label).toMatch(/not yet implemented/);
+    }
+  });
+
+  it('REFERENCE_CATALOG_IDS lists exactly the 10 registered catalogs', () => {
+    expect(REFERENCE_CATALOG_IDS.sort()).toEqual(
+      [
+        'frlg-flags', 'frlg-maps-warps', 'frlg-trainers', 'frlg-vars',
+        'gen3-abilities', 'gen3-items', 'gen3-moves', 'gen3-natures', 'gen3-species', 'gen3-types',
+      ].sort(),
+    );
   });
 
   it('getReferenceCatalog resolves each registered id to its catalog', () => {
     expect(getReferenceCatalog('gen3-items')).toBe(REFERENCE_CATALOGS['gen3-items']);
     expect(getReferenceCatalog('gen3-moves')).toBe(REFERENCE_CATALOGS['gen3-moves']);
+    expect(getReferenceCatalog('gen3-species')).toBe(REFERENCE_CATALOGS['gen3-species']);
   });
 });

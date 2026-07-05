@@ -10,9 +10,9 @@
 // CuratedActionSchema directly, not this adapted shape.
 
 import type { ActionField, ActionTemplate } from '../templates/action-templates.js';
-import type { ActionFieldOption, CuratedActionSchema, CuratedSchemaField, GameTarget, ImportedTextBlock } from './types.js';
+import type { ActionFieldOption, CuratedActionSchema, CuratedSchemaField, GameTarget, ImportedTextBlock, Project } from './types.js';
 import { normalizeLabel } from './normalize.js';
-import { checkTargetCompatibility } from './gameTarget.js';
+import { checkTargetCompatibility, isUnknownTarget } from './gameTarget.js';
 import { referenceEntryLabel } from './referenceData.js';
 import { getReferenceCatalog } from '../reference/index.js';
 
@@ -51,7 +51,13 @@ export function toActionTemplateShape(schema: CuratedActionSchema): ActionTempla
   };
 }
 
-/** Disabled schemas are excluded from selection; draft and reviewed are both selectable in Run Script. */
+/**
+ * Disabled schemas are excluded; draft and reviewed schemas are both
+ * selectable for Setup/schema-editing purposes (e.g. the Manage Scripts
+ * "Unattached schemas" list, editing an existing schema). This is
+ * deliberately broader than Run Script's own filter — see isSchemaRunnable
+ * and defaultRunnableSchemas/advancedRunnableSchemas for that.
+ */
 export function isSchemaSelectable(schema: CuratedActionSchema): boolean {
   return schema.status !== 'disabled';
 }
@@ -130,27 +136,67 @@ export function countSavedOutputsUsingSchema(blocks: readonly ImportedTextBlock[
 }
 
 /**
- * Schemas that should populate Run Script's default dropdown for a selected
- * target: reviewed, non-disabled, and an exact target match. Deliberately
- * excludes draft schemas and non-exact matches even if otherwise selectable
- * — see advancedRunnableSchemas for those. Never a silent fallback.
+ * Every condition that makes a schema runnable in Run Script EXCEPT the
+ * target match — reviewed, linked to a script that still exists in this
+ * project, an explicit (non-Unknown) target of its own, and at least one
+ * field to fill in. Draft, disabled, detached (no scriptId, or scriptId
+ * pointing at a script that's since been removed/replaced), Unknown-target,
+ * and fieldless schemas never satisfy this, regardless of target — those
+ * belong in Setup/Manage Scripts, not Run Script, no matter which target is
+ * selected there.
  */
-export function defaultRunnableSchemas(
-  schemas: readonly CuratedActionSchema[],
-  runTarget: GameTarget,
-): CuratedActionSchema[] {
-  return schemas.filter((s) => s.status === 'reviewed' && checkTargetCompatibility(s.target, runTarget) === 'exact');
+function isSchemaStructurallyRunnable(schema: CuratedActionSchema, project: Project): boolean {
+  return (
+    schema.status === 'reviewed' &&
+    !!schema.scriptId &&
+    project.scripts.some((s) => s.id === schema.scriptId) &&
+    !isUnknownTarget(schema.target) &&
+    schema.fields.length > 0
+  );
 }
 
 /**
- * Selectable schemas that do NOT qualify as default-runnable for this
- * target (draft status, unknown/mixed target, or a different target) —
- * meant for an explicit "show other schemas" disclosure, never auto-selected.
+ * True only when a schema is genuinely runnable in Run Script for
+ * selectedTarget specifically: everything isSchemaStructurallyRunnable
+ * checks, plus an exact match between the schema's own target and
+ * selectedTarget. Never a silent fallback — an Unknown/Mixed selectedTarget
+ * never exact-matches a schema's explicit target, and vice versa.
+ */
+export function isSchemaRunnable(
+  schema: CuratedActionSchema,
+  project: Project,
+  selectedTarget: GameTarget,
+): boolean {
+  return isSchemaStructurallyRunnable(schema, project) && checkTargetCompatibility(schema.target, selectedTarget) === 'exact';
+}
+
+/**
+ * Schemas that should populate Run Script's default dropdown for a selected
+ * target — see isSchemaRunnable for the full criteria. Never a silent
+ * fallback: draft, detached, scriptless, fieldless, Unknown-target, or
+ * non-exact-target schemas are excluded entirely, not shown some other way,
+ * here.
+ */
+export function defaultRunnableSchemas(
+  schemas: readonly CuratedActionSchema[],
+  project: Project,
+  runTarget: GameTarget,
+): CuratedActionSchema[] {
+  return schemas.filter((s) => isSchemaRunnable(s, project, runTarget));
+}
+
+/**
+ * Reviewed, script-linked, fielded schemas with an explicit target that
+ * simply doesn't match the currently selected one — a legitimate "run this
+ * for a different target" pick, meant for an explicit "show other schemas"
+ * disclosure, never auto-selected. Draft, disabled, detached, and fieldless
+ * schemas never appear here either — those belong in Setup, not Run Script.
  */
 export function advancedRunnableSchemas(
   schemas: readonly CuratedActionSchema[],
+  project: Project,
   runTarget: GameTarget,
 ): CuratedActionSchema[] {
-  const defaultIds = new Set(defaultRunnableSchemas(schemas, runTarget).map((s) => s.id));
-  return schemas.filter((s) => isSchemaSelectable(s) && !defaultIds.has(s.id));
+  const defaultIds = new Set(defaultRunnableSchemas(schemas, project, runTarget).map((s) => s.id));
+  return schemas.filter((s) => !defaultIds.has(s.id) && isSchemaStructurallyRunnable(s, project));
 }

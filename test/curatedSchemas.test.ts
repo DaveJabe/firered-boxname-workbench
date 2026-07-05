@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { ActionInput, CuratedActionSchema, ImportedTextBlock, ScriptFile } from '../src/core/types.js';
+import type { ActionInput, CuratedActionSchema, ImportedTextBlock, Project, ScriptFile } from '../src/core/types.js';
 import { createProject } from '../src/core/factory.js';
 import { scanScript } from '../src/core/scriptScanner.js';
 import { missingRequiredActionFields } from '../src/core/actionInput.js';
@@ -7,6 +7,7 @@ import { MockGeneratorAdapter, MOCK_PLACEHOLDER_TEXT, MOCK_ROW_COUNT } from '../
 import {
   toActionTemplateShape,
   isSchemaSelectable,
+  isSchemaRunnable,
   resolveCuratedSchema,
   supportsRevision,
   defaultRunnableSchemas,
@@ -69,6 +70,17 @@ function makeCuratedSchema(over: Partial<CuratedActionSchema> = {}): CuratedActi
     ],
     ...over,
   };
+}
+
+/** A minimal, otherwise-valid Project whose .scripts is the only thing isSchemaRunnable/defaultRunnableSchemas/advancedRunnableSchemas read. */
+function makeProjectWithScripts(scripts: ScriptFile[] = [makeScriptFile()]): Project {
+  const project = createProject(
+    { revisionLabel: 'Rev 1', languageLabel: 'En', projectTitle: 'P', mode: 'documentation', templateKey: '' },
+    makeIdGen(),
+    () => ISO,
+  );
+  project.scripts = scripts;
+  return project;
 }
 
 describe('curated schema validation', () => {
@@ -273,39 +285,107 @@ describe('defaultRunnableSchemas / advancedRunnableSchemas — Run Script target
   const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
   const fireRed11 = { game: 'FireRed', language: 'English', revision: '1.1' } as const;
 
-  it('defaultRunnableSchemas keeps only reviewed schemas with an exact target match', () => {
+  it('defaultRunnableSchemas keeps only reviewed, script-linked, fielded schemas with an exact target match', () => {
+    const project = makeProjectWithScripts();
     const reviewedExact = makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 });
     const reviewedOtherTarget = makeCuratedSchema({ id: 'b', status: 'reviewed', target: fireRed11 });
     const draftExact = makeCuratedSchema({ id: 'c', status: 'draft', target: fireRed10 });
     const disabledExact = makeCuratedSchema({ id: 'd', status: 'disabled', target: fireRed10 });
     const schemas = [reviewedExact, reviewedOtherTarget, draftExact, disabledExact];
-    expect(defaultRunnableSchemas(schemas, fireRed10).map((s) => s.id)).toEqual(['a']);
+    expect(defaultRunnableSchemas(schemas, project, fireRed10).map((s) => s.id)).toEqual(['a']);
   });
 
   it('excludes reviewed schemas with an Unknown/Mixed target from the default list, even if the selected target is also Unknown', () => {
+    const project = makeProjectWithScripts();
     const reviewedUnknown = makeCuratedSchema({ id: 'a', status: 'reviewed', target: UNKNOWN_TARGET });
-    expect(defaultRunnableSchemas([reviewedUnknown], UNKNOWN_TARGET)).toEqual([]);
+    expect(defaultRunnableSchemas([reviewedUnknown], project, UNKNOWN_TARGET)).toEqual([]);
   });
 
-  it('advancedRunnableSchemas lists selectable schemas that are not in the default set — draft, or a different/unknown target', () => {
+  it('advancedRunnableSchemas lists reviewed, script-linked, fielded schemas with a different explicit target — never draft, disabled, detached, or Unknown-target', () => {
+    const project = makeProjectWithScripts();
     const reviewedExact = makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 });
     const draftExact = makeCuratedSchema({ id: 'b', status: 'draft', target: fireRed10 });
     const reviewedOtherTarget = makeCuratedSchema({ id: 'c', status: 'reviewed', target: fireRed11 });
     const disabled = makeCuratedSchema({ id: 'd', status: 'disabled', target: fireRed10 });
     const schemas = [reviewedExact, draftExact, reviewedOtherTarget, disabled];
-    const advanced = advancedRunnableSchemas(schemas, fireRed10);
-    expect(advanced.map((s) => s.id).sort()).toEqual(['b', 'c']);
+    const advanced = advancedRunnableSchemas(schemas, project, fireRed10);
+    expect(advanced.map((s) => s.id)).toEqual(['c']);
     expect(advanced.some((s) => s.id === 'a')).toBe(false); // already in the default set
+    expect(advanced.some((s) => s.id === 'b')).toBe(false); // draft — setup-only, never in Run Script at all
     expect(advanced.some((s) => s.id === 'd')).toBe(false); // disabled, never selectable at all
   });
 
   it('supports multiple schemas sharing the same actionKey but targeting different revisions', () => {
+    const project = makeProjectWithScripts();
     const v10 = makeCuratedSchema({ id: 'teach-any-move-fr-en-10', actionKey: 'teach-any-move', status: 'reviewed', target: fireRed10 });
     const v11 = makeCuratedSchema({ id: 'teach-any-move-fr-en-11', actionKey: 'teach-any-move', status: 'reviewed', target: fireRed11 });
     expect(v10.id).not.toBe(v11.id); // schema id stays unique per target-specific variant
     expect(v10.actionKey).toBe(v11.actionKey); // same stable action concept
-    expect(defaultRunnableSchemas([v10, v11], fireRed10).map((s) => s.id)).toEqual(['teach-any-move-fr-en-10']);
-    expect(defaultRunnableSchemas([v10, v11], fireRed11).map((s) => s.id)).toEqual(['teach-any-move-fr-en-11']);
+    expect(defaultRunnableSchemas([v10, v11], project, fireRed10).map((s) => s.id)).toEqual(['teach-any-move-fr-en-10']);
+    expect(defaultRunnableSchemas([v10, v11], project, fireRed11).map((s) => s.id)).toEqual(['teach-any-move-fr-en-11']);
+  });
+});
+
+describe('isSchemaRunnable — the single source of truth for what belongs in Run Script', () => {
+  const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
+  const fireRed11 = { game: 'FireRed', language: 'English', revision: '1.1' } as const;
+
+  it('a reviewed schema linked to an existing script, with an exact target match and at least one field, is runnable', () => {
+    const project = makeProjectWithScripts();
+    const schema = makeCuratedSchema({ status: 'reviewed', target: fireRed11 });
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(true);
+  });
+
+  it('a draft linked schema is not runnable', () => {
+    const project = makeProjectWithScripts();
+    const schema = makeCuratedSchema({ status: 'draft', target: fireRed11 });
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(false);
+  });
+
+  it('a disabled linked schema is not runnable', () => {
+    const project = makeProjectWithScripts();
+    const schema = makeCuratedSchema({ status: 'disabled', target: fireRed11 });
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(false);
+  });
+
+  it('a reviewed but detached (scriptId-less) schema is not runnable', () => {
+    const project = makeProjectWithScripts();
+    const schema = detachCuratedSchema(makeCuratedSchema({ status: 'reviewed', target: fireRed11 }));
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(false);
+  });
+
+  it('a reviewed schema attached to a script id that no longer exists in the project is not runnable', () => {
+    const project = makeProjectWithScripts([]); // script-1 was removed/replaced since the schema was reviewed
+    const schema = makeCuratedSchema({ status: 'reviewed', target: fireRed11, scriptId: 'script-1' });
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(false);
+  });
+
+  it('a reviewed Unknown/Mixed-target schema never silently matches an explicit FireRed/English/1.1 selected target', () => {
+    const project = makeProjectWithScripts();
+    const schema = makeCuratedSchema({ status: 'reviewed', target: UNKNOWN_TARGET });
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(false);
+  });
+
+  it('a reviewed, linked, fielded schema with a different explicit target is not runnable for the currently selected target', () => {
+    const project = makeProjectWithScripts();
+    const schema = makeCuratedSchema({ status: 'reviewed', target: fireRed10 });
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(false);
+  });
+
+  it('a reviewed, linked schema with zero fields is not runnable', () => {
+    const project = makeProjectWithScripts();
+    const schema = makeCuratedSchema({ status: 'reviewed', target: fireRed11, fields: [] });
+    expect(isSchemaRunnable(schema, project, fireRed11)).toBe(false);
+  });
+
+  it('Setup/Manage Scripts can still display draft and detached schemas via isSchemaSelectable, even though neither is Run-Script-runnable', () => {
+    const project = makeProjectWithScripts();
+    const draft = makeCuratedSchema({ id: 'draft', status: 'draft', target: fireRed11 });
+    const detached = detachCuratedSchema(makeCuratedSchema({ id: 'detached', status: 'reviewed', target: fireRed11 }));
+    expect(isSchemaSelectable(draft)).toBe(true);
+    expect(isSchemaSelectable(detached)).toBe(true);
+    expect(isSchemaRunnable(draft, project, fireRed11)).toBe(false);
+    expect(isSchemaRunnable(detached, project, fireRed11)).toBe(false);
   });
 });
 
@@ -343,31 +423,34 @@ describe('schema management: delete/duplicate/detach', () => {
   });
 
   it('deleting a schema removes it from Run Script default and advanced candidates', () => {
+    const project = makeProjectWithScripts();
     const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
     const schemas = [makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 })];
-    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(1);
+    expect(defaultRunnableSchemas(schemas, project, fireRed10)).toHaveLength(1);
     removeCuratedSchema(schemas, 'a');
-    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
-    expect(advancedRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
+    expect(defaultRunnableSchemas(schemas, project, fireRed10)).toHaveLength(0);
+    expect(advancedRunnableSchemas(schemas, project, fireRed10)).toHaveLength(0);
   });
 
   it('disabling a schema removes it from Run Script default and advanced candidates', () => {
+    const project = makeProjectWithScripts();
     const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
     const schemas = [makeCuratedSchema({ id: 'a', status: 'reviewed', target: fireRed10 })];
-    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(1);
+    expect(defaultRunnableSchemas(schemas, project, fireRed10)).toHaveLength(1);
     schemas[0].status = 'disabled';
-    expect(defaultRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
-    expect(advancedRunnableSchemas(schemas, fireRed10)).toHaveLength(0);
+    expect(defaultRunnableSchemas(schemas, project, fireRed10)).toHaveLength(0);
+    expect(advancedRunnableSchemas(schemas, project, fireRed10)).toHaveLength(0);
     expect(isSchemaSelectable(schemas[0])).toBe(false);
   });
 
-  it('draft schemas stay out of the default list but remain in the advanced list; reviewed+exact-target stays in the default list', () => {
+  it('draft schemas stay out of both the default and advanced lists; reviewed+exact-target stays in the default list', () => {
+    const project = makeProjectWithScripts();
     const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
     const draft = makeCuratedSchema({ id: 'a', status: 'draft', target: fireRed10 });
     const reviewed = makeCuratedSchema({ id: 'b', status: 'reviewed', target: fireRed10 });
     const schemas = [draft, reviewed];
-    expect(defaultRunnableSchemas(schemas, fireRed10).map((s) => s.id)).toEqual(['b']);
-    expect(advancedRunnableSchemas(schemas, fireRed10).map((s) => s.id)).toEqual(['a']);
+    expect(defaultRunnableSchemas(schemas, project, fireRed10).map((s) => s.id)).toEqual(['b']);
+    expect(advancedRunnableSchemas(schemas, project, fireRed10)).toEqual([]); // draft is setup-only, never in Run Script at all
   });
 
   it('nextDuplicateSchemaId avoids collisions, incrementing a numeric suffix', () => {
@@ -396,11 +479,13 @@ describe('schema management: delete/duplicate/detach', () => {
     expect(detached.fields).toEqual(original.fields);
   });
 
-  it('a detached (scriptId-less) reviewed schema is still selectable/runnable — detach is not the same as delete or disable', () => {
+  it('a detached (scriptId-less) reviewed schema is still selectable for Setup, but is no longer Run-Script-runnable — detach is not delete/disable, but it does leave Run Script', () => {
+    const project = makeProjectWithScripts();
     const fireRed10 = { game: 'FireRed', language: 'English', revision: '1.0' } as const;
     const detached = detachCuratedSchema(makeCuratedSchema({ status: 'reviewed', target: fireRed10 }));
-    expect(isSchemaSelectable(detached)).toBe(true);
-    expect(defaultRunnableSchemas([detached], fireRed10)).toHaveLength(1);
+    expect(isSchemaSelectable(detached)).toBe(true); // still fine for Setup/Unattached schemas
+    expect(defaultRunnableSchemas([detached], project, fireRed10)).toHaveLength(0);
+    expect(advancedRunnableSchemas([detached], project, fireRed10)).toHaveLength(0);
   });
 });
 

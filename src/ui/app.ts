@@ -358,28 +358,39 @@ function applySchemaFieldBinding(bind: string, candidateKey: string | undefined,
   }
 }
 
-/** Resolve Run Script's currently-selected curated schema to the common
- *  ActionTemplate shape the field renderer expects. Null only when no
- *  selectable curated schema exists at all — callers must not fill/generate then. */
 /**
  * Resolve Run Script's currently-selected schema by id exactly — no fallback
- * to "first selectable." Which id counts as the sensible default for the
- * current target is decided explicitly by pickDefaultCuratedSchemaId,
- * called whenever the target or workspace changes; this never guesses.
+ * to "first selectable." Only ever resolves to a schema that's either a
+ * default (exact target match) or advanced (structurally runnable, just a
+ * different target — the explicit "Use this schema" pick) candidate; draft,
+ * disabled, detached, scriptless, fieldless, or Unknown-target schemas are
+ * in neither list and so never resolve here, not just "selectable." Which
+ * id counts as the sensible default for the current target is decided
+ * explicitly by pickDefaultCuratedSchemaId, called whenever the target or
+ * workspace changes; this never guesses.
  */
 function resolveActionDefinition(
   ab: ActionBuilderState,
   project: Project,
 ): { template: ActionTemplate; curated: CuratedActionSchema } | null {
-  const schema = project.curatedSchemas.find((s) => s.id === ab.curatedSchemaId && isSchemaSelectable(s));
+  const candidates = [
+    ...defaultRunnableSchemas(project.curatedSchemas, project, ab.runTarget),
+    ...advancedRunnableSchemas(project.curatedSchemas, project, ab.runTarget),
+  ];
+  const schema = candidates.find((s) => s.id === ab.curatedSchemaId);
   return schema ? { template: toActionTemplateShape(schema), curated: schema } : null;
 }
 
 /** The schema id Run Script should default to for this target: the current
  *  id if it's still a default-runnable match, else the first default match,
  *  else none (the empty state / advanced disclosure take over). */
-function pickDefaultCuratedSchemaId(schemas: readonly CuratedActionSchema[], runTarget: GameTarget, currentId: string): string {
-  const defaults = defaultRunnableSchemas(schemas, runTarget);
+function pickDefaultCuratedSchemaId(
+  schemas: readonly CuratedActionSchema[],
+  project: Project,
+  runTarget: GameTarget,
+  currentId: string,
+): string {
+  const defaults = defaultRunnableSchemas(schemas, project, runTarget);
   if (defaults.some((s) => s.id === currentId)) return currentId;
   return defaults[0]?.id ?? '';
 }
@@ -936,8 +947,8 @@ function renderActions(): string {
       </div>`;
   }
 
-  const defaultSchemas = defaultRunnableSchemas(p.curatedSchemas, ab.runTarget);
-  const advancedSchemas = advancedRunnableSchemas(p.curatedSchemas, ab.runTarget);
+  const defaultSchemas = defaultRunnableSchemas(p.curatedSchemas, p, ab.runTarget);
+  const advancedSchemas = advancedRunnableSchemas(p.curatedSchemas, p, ab.runTarget);
   const resolved = resolveActionDefinition(ab, p);
 
   const targetCard = `<div class="card">
@@ -2680,7 +2691,7 @@ function resetGeneratedOutput(ab: ActionBuilderState): void {
  *  default match (or none) — never silently keep an incompatible selection. */
 function onRunTargetChanged(ab: ActionBuilderState, project: Project | null): void {
   if (!project) return;
-  ab.curatedSchemaId = pickDefaultCuratedSchemaId(project.curatedSchemas, ab.runTarget, ab.curatedSchemaId);
+  ab.curatedSchemaId = pickDefaultCuratedSchemaId(project.curatedSchemas, project, ab.runTarget, ab.curatedSchemaId);
   const resolved = resolveActionDefinition(ab, project);
   ab.values = resolved ? defaultActionValues(resolved.template) : {};
   resetGeneratedOutput(ab);

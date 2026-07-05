@@ -59,7 +59,9 @@ import {
   summarizeVariantVerification,
   summarizePresetVerification,
   describeSchemaVerificationSetupError,
+  runAllSchemaReviewCases,
   type ActionVariantVerificationStatus,
+  type SchemaReviewCaseBatchResult,
 } from '../core/schemaVerification.js';
 import {
   computeSchemaShapeSignature,
@@ -545,6 +547,8 @@ const state: {
   reviewCaseEditor: ReviewCaseEditorState | null;
   /** Setup "Schema verification": which schema's review cases are currently expanded, if any. */
   reviewCasesDetailSchemaId: string | null;
+  /** Setup "Schema verification": the last "Run all verification cases" result, if any has been run this session (not persisted to the project). */
+  batchVerificationResult: SchemaReviewCaseBatchResult | null;
   /** Setup "Similar scripts": which script's shape-family detail is currently expanded, if any. */
   familyDetailScriptId: string | null;
   /** Landing screen: whether the full workspace list is expanded (vs. just the most recent one). */
@@ -586,6 +590,7 @@ const state: {
   schemaEditor: null,
   reviewCaseEditor: null,
   reviewCasesDetailSchemaId: null,
+  batchVerificationResult: null,
   familyDetailScriptId: null,
   manageWorkspacesOpen: false,
   scriptsFilter: 'all',
@@ -2011,6 +2016,53 @@ function variantVerificationPanelHtml(project: Project): string {
     <p class="muted">Re-check a supported action variant against saved examples instead of re-reviewing it line by line. "Add review case" takes you to Run Script to fill/preview/paste-back and save one. "Not available" means this variant can't be verified right now (detached/missing script/disabled/draft-only) — fix that in Setup first.</p>
     <table><thead><tr><th>Action</th><th>Target</th><th>Script</th><th>Cases</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     ${detail}
+    <div class="row" style="margin-top:0.5rem">
+      <button class="btn primary" data-action="run-all-schema-verification">Run all verification cases</button>
+    </div>
+    ${batchVerificationResultHtml(state.batchVerificationResult)}
+  </div>`;
+}
+
+/**
+ * Setup's "Run all verification cases" result: a summary line, then a
+ * failure report for anything that came back "failing" — action label,
+ * target, schema id, script filename, the first few error messages, and a
+ * button straight to that script's review. Purely a display of the last
+ * batch run stored in state.batchVerificationResult; running again
+ * replaces it, nothing here mutates a review case on its own.
+ */
+function batchVerificationResultHtml(batch: SchemaReviewCaseBatchResult | null): string {
+  if (!batch) return '';
+  const s = batch.summary;
+  const summaryHtml = `<p class="muted">
+    Total: ${s.total} · Passing: ${s.passing} · Failing: ${s.failing} · Not available: ${s.notAvailable} · Accepted manually: ${s.accepted} · Draft: ${s.draft}
+  </p>`;
+
+  const failures = batch.results.filter((r) => r.status === 'failing');
+  if (failures.length === 0) {
+    return `<div class="card">${summaryHtml}<p class="muted">No failing cases.</p></div>`;
+  }
+
+  const failureRows = failures
+    .map((r) => {
+      const errors = r.verification?.errors ?? [];
+      const firstFew = errors.slice(0, 3).map((e) => escapeHtml(e)).join('<br>');
+      const more = errors.length > 3 ? `<div class="muted">…and ${errors.length - 3} more</div>` : '';
+      return `<tr>
+        <td>${r.actionLabel ? escapeHtml(r.actionLabel) : '<span class="muted">—</span>'}</td>
+        <td>${r.target ? escapeHtml(targetLabel(r.target)) : '—'}</td>
+        <td><code>${r.schemaId ? escapeHtml(r.schemaId) : '—'}</code></td>
+        <td>${r.scriptFilename ? escapeHtml(r.scriptFilename) : '—'}</td>
+        <td>${firstFew || '<span class="muted">—</span>'}${more}</td>
+        <td>${r.scriptId ? `<button class="btn small" data-action="open-script" data-id="${attr(r.scriptId)}">Open script review</button>` : ''}</td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<div class="card">
+    ${summaryHtml}
+    <h4>Failing cases</h4>
+    <table><thead><tr><th>Action</th><th>Target</th><th>Schema id</th><th>Script</th><th>Errors</th><th></th></tr></thead><tbody>${failureRows}</tbody></table>
   </div>`;
 }
 
@@ -2490,6 +2542,7 @@ function resetViewState(project: Project): void {
   state.schemaEditor = null;
   state.reviewCaseEditor = null;
   state.reviewCasesDetailSchemaId = null;
+  state.batchVerificationResult = null;
   state.familyDetailScriptId = null;
   state.scriptsFilter = 'all';
   state.scriptsSearch = '';
@@ -3046,6 +3099,18 @@ async function handleClick(e: Event): Promise<void> {
         if (reviewCase.status === 'accepted') continue; // a human's explicit override — never silently overwritten by a live check
         reviewCase.status = verifySchemaReviewCase(p, schema, reviewCase).status;
       }
+      commit();
+      break;
+    }
+    case 'run-all-schema-verification': {
+      if (!p) break;
+      const batch = runAllSchemaReviewCases(p);
+      // Persist only what was actually live-checked — 'accepted'/'draft' cases keep their own
+      // stored status untouched, and 'not-available' has no corresponding SchemaReviewCaseStatus.
+      for (const result of batch.results) {
+        if (result.verification) result.reviewCase.status = result.verification.status;
+      }
+      state.batchVerificationResult = batch;
       commit();
       break;
     }

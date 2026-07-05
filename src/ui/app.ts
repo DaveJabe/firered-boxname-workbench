@@ -81,6 +81,7 @@ import {
 import { REVIEWED_SCHEMA_PRESETS } from '../templates/reviewed-schema-presets.js';
 import { referenceEntryLabel } from '../core/referenceData.js';
 import { REFERENCE_CATALOGS, REFERENCE_CATALOG_IDS, getReferenceCatalog } from '../reference/index.js';
+import { buildCatalogGapAudit, exportCatalogGapAuditJson, applyStaleFieldRepair } from '../core/catalogGapAudit.js';
 import {
   TARGET_GAMES,
   TARGET_LANGUAGES,
@@ -434,6 +435,10 @@ const state: {
    * clicks via a native 'toggle' event listener (see initEventListeners).
    */
   scriptsAdvancedOpen: boolean;
+  /** Setup "Catalog Audit" disclosure — same persisted-open-state pattern as scriptsAdvancedOpen. */
+  catalogAuditOpen: boolean;
+  /** Setup "Catalog Audit": finding keys the user has explicitly marked ignored/manual-only this session (not persisted to the project). */
+  catalogAuditIgnored: Set<string>;
   /** Manage Scripts: target metadata to apply to the next imported script folder. */
   pendingPackTarget: GameTarget;
   pendingPackTargetNotes: string;
@@ -456,6 +461,8 @@ const state: {
   scriptsFilter: 'all',
   scriptsSearch: '',
   scriptsAdvancedOpen: false,
+  catalogAuditOpen: false,
+  catalogAuditIgnored: new Set(),
   pendingPackTarget: UNKNOWN_TARGET,
   pendingPackTargetNotes: '',
   pendingSourceProfile: 'generic',
@@ -1588,6 +1595,154 @@ function compactCatalogHtml(project: Project): string {
   </div>`;
 }
 
+function confidenceBadgeClass(confidence: 'high' | 'medium' | 'low'): string {
+  return confidence === 'high' ? 'info' : confidence === 'medium' ? 'warning' : 'error';
+}
+
+/** Group a flat list of FieldClassification by their scriptId+variableName into one "example" summary line each, capped for display. */
+function exampleFieldsSummary(fields: readonly { scriptId?: string; scriptFilename?: string; variableName: string }[], max = 5): string {
+  const examples = fields.slice(0, max).map((f) => `${f.scriptFilename ?? f.scriptId ?? '?'}: ${f.variableName}`);
+  const more = fields.length > max ? ` (+${fields.length - max} more)` : '';
+  return examples.join(', ') + more;
+}
+
+/**
+ * Setup/Advanced-only "Catalog Audit" panel — a data-driven, review-
+ * prioritization report built entirely from already-known project data and
+ * the local reference-catalog/bounded-preset registries. Never fetches
+ * data, never invokes a generator, never silently rewrites a schema.
+ */
+function catalogAuditPanelHtml(project: Project): string {
+  const audit = buildCatalogGapAudit(project, nowIso);
+  const ignored = state.catalogAuditIgnored;
+
+  const missingCatalogsRows = audit.missingCatalogs
+    .filter((n) => !ignored.has(`catalog:${n.catalogId}`))
+    .map((need) => {
+      const scriptsAffected = new Set(need.suggestedByFields.map((f) => f.scriptId)).size;
+      const topConfidence = need.suggestedByFields.some((f) => f.confidence === 'high') ? 'high' : need.suggestedByFields.some((f) => f.confidence === 'medium') ? 'medium' : 'low';
+      return `<tr>
+        <td>${escapeHtml(need.catalogId)}</td>
+        <td>${scriptsAffected}</td>
+        <td>${escapeHtml(exampleFieldsSummary(need.suggestedByFields))}</td>
+        <td><span class="badge ${confidenceBadgeClass(topConfidence)}">${escapeHtml(topConfidence)}</span></td>
+        <td><button class="btn small" data-action="ignore-catalog-finding" data-id="catalog:${attr(need.catalogId)}">Mark ignored</button></td>
+      </tr>`;
+    })
+    .join('');
+
+  const partialCatalogsRows = audit.partialCatalogsUsed
+    .filter((c) => !ignored.has(`partial:${c.catalogId}`))
+    .map(
+      (c) => `<tr>
+        <td>${escapeHtml(c.catalogId)}</td>
+        <td>${c.entryCount}</td>
+        <td>${c.usedBySchemaIds.length}</td>
+        <td><button class="btn small" data-action="ignore-catalog-finding" data-id="partial:${attr(c.catalogId)}">Mark ignored</button></td>
+      </tr>`,
+    )
+    .join('');
+
+  const staleFieldsRows = audit.staleSchemaFields
+    .filter((f) => !ignored.has(`stale:${f.schemaId}:${f.classification.variableName}`))
+    .map((f) => {
+      const key = `stale:${f.schemaId}:${f.classification.variableName}`;
+      const afterDescription = f.suggestedType === 'reference-select'
+        ? `reference-select (${f.classification.catalogId})`
+        : `select (${f.classification.boundedPresetId})`;
+      return `<tr>
+        <td>${escapeHtml(f.schemaLabel)}${f.scriptFilename ? ' · ' + escapeHtml(f.scriptFilename) : ''}</td>
+        <td>${escapeHtml(f.classification.variableName)}</td>
+        <td>${escapeHtml(f.currentType)} → ${escapeHtml(afterDescription)}</td>
+        <td><span class="badge ${confidenceBadgeClass(f.classification.confidence)}">${escapeHtml(f.classification.confidence)}</span></td>
+        <td>
+          <button class="btn small primary" data-action="repair-stale-field" data-id="${attr(f.schemaId)}" data-variable="${attr(f.classification.variableName)}">Repair suggested</button>
+          <button class="btn small" data-action="ignore-catalog-finding" data-id="${attr(key)}">Mark ignored</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  const boundedControlsRows = audit.suggestedBoundedControls
+    .filter((c) => !ignored.has(`bounded:${c.boundedPresetId}`))
+    .map((c) => {
+      const scriptsAffected = new Set(c.suggestedByFields.map((f) => f.scriptId)).size;
+      return `<tr>
+        <td>${escapeHtml(c.label)}</td>
+        <td>${scriptsAffected}</td>
+        <td>${escapeHtml(exampleFieldsSummary(c.suggestedByFields))}</td>
+        <td><button class="btn small" data-action="ignore-catalog-finding" data-id="bounded:${attr(c.boundedPresetId)}">Mark ignored</button></td>
+      </tr>`;
+    })
+    .join('');
+
+  const unknownFieldsRows = audit.unknownFields
+    .filter((f) => !ignored.has(`unknown:${f.scriptId}:${f.variableName}`))
+    .map((f) => {
+      const key = `unknown:${f.scriptId}:${f.variableName}`;
+      return `<tr>
+        <td>${escapeHtml(f.scriptFilename ?? f.scriptId ?? '—')}</td>
+        <td>${escapeHtml(f.variableName)}</td>
+        <td>${escapeHtml(f.reason)}</td>
+        <td>
+          ${f.scriptId ? `<button class="btn small" data-action="open-script" data-id="${attr(f.scriptId)}">Open script review</button>` : ''}
+          <button class="btn small" data-action="ignore-catalog-finding" data-id="${attr(key)}">Mark ignored</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  const blockedScriptsRows = audit.topBlockedScripts
+    .map(
+      (b) => `<tr>
+        <td>${escapeHtml(b.scriptFilename)}</td>
+        <td>${b.blockedByCount}</td>
+        <td><button class="btn small" data-action="open-script" data-id="${attr(b.scriptId)}">Open script review</button></td>
+      </tr>`,
+    )
+    .join('');
+
+  return `<details id="catalog-audit-details"${state.catalogAuditOpen ? ' open' : ''}>
+    <summary class="muted" style="cursor:pointer">Catalog Audit <span class="pill">Setup/Advanced only</span></summary>
+    <div class="card">
+      <p class="muted">A data-driven, review-prioritization report — never a claim of semantic correctness, never a silent rewrite. Generated ${escapeHtml(audit.generatedAt)} from ${audit.scannedScriptCount}/${audit.scriptCount} scanned scripts.</p>
+      <div class="row" style="margin-bottom:0.5rem">
+        <button class="btn" data-action="export-catalog-audit">Export audit JSON</button>
+      </div>
+
+      <h4>Missing catalogs</h4>
+      ${missingCatalogsRows
+        ? `<table><thead><tr><th>Catalog</th><th>Scripts affected</th><th>Examples</th><th>Confidence</th><th></th></tr></thead><tbody>${missingCatalogsRows}</tbody></table>`
+        : '<p class="muted">No missing-catalog needs detected from scanned scripts.</p>'}
+
+      <h4>Partial catalogs currently used</h4>
+      ${partialCatalogsRows
+        ? `<table><thead><tr><th>Catalog</th><th>Entries</th><th>Schemas using it</th><th></th></tr></thead><tbody>${partialCatalogsRows}</tbody></table>`
+        : '<p class="muted">No partial catalog is currently in use by a schema.</p>'}
+
+      <h4>Stale schema fields</h4>
+      ${staleFieldsRows
+        ? `<table><thead><tr><th>Schema</th><th>Variable</th><th>Suggested repair</th><th>Confidence</th><th></th></tr></thead><tbody>${staleFieldsRows}</tbody></table>`
+        : '<p class="muted">No stale schema fields detected.</p>'}
+
+      <h4>Suggested bounded controls</h4>
+      ${boundedControlsRows
+        ? `<table><thead><tr><th>Control</th><th>Scripts affected</th><th>Examples</th><th></th></tr></thead><tbody>${boundedControlsRows}</tbody></table>`
+        : '<p class="muted">No bounded-control suggestions right now.</p>'}
+
+      <h4>Unknown / manual-review fields</h4>
+      ${unknownFieldsRows
+        ? `<table><thead><tr><th>Script</th><th>Variable</th><th>Reason</th><th></th></tr></thead><tbody>${unknownFieldsRows}</tbody></table>`
+        : '<p class="muted">No unrecognized fields right now.</p>'}
+
+      <h4>Top scripts blocked by missing catalog coverage</h4>
+      ${blockedScriptsRows
+        ? `<table><thead><tr><th>Script</th><th>Blocked fields</th><th></th></tr></thead><tbody>${blockedScriptsRows}</tbody></table>`
+        : '<p class="muted">No scripts are currently blocked by a missing catalog.</p>'}
+    </div>
+  </details>`;
+}
+
 function renderScripts(): string {
   const p = state.project!;
   const allRows = buildScriptPackRows(p.scripts, p.curatedSchemas, p.scriptPacks);
@@ -1650,6 +1805,7 @@ function renderScripts(): string {
       ${managementHtml}
       ${cardsHtml}
     </details>
+    ${catalogAuditPanelHtml(p)}
     <details>
       <summary class="muted" style="cursor:pointer">Advanced / manual import — for offline use or a pinned local copy</summary>
       <p class="muted">Fetching from GitHub above is the recommended way to get E-Sh4rk scripts. Use local import only if you're offline, want a specific pinned copy, or are working with scripts that aren't on GitHub.</p>
@@ -1990,6 +2146,8 @@ function resetViewState(project: Project): void {
   state.scriptsFilter = 'all';
   state.scriptsSearch = '';
   state.scriptsAdvancedOpen = false;
+  state.catalogAuditOpen = false;
+  state.catalogAuditIgnored.clear();
   state.pendingPackTarget = UNKNOWN_TARGET;
   state.pendingPackTargetNotes = '';
   state.pendingSourceProfile = 'generic';
@@ -2405,6 +2563,35 @@ async function handleClick(e: Event): Promise<void> {
       const schema = buildDraftActionSchema(script, script.lastScan, nowIso);
       const base = script.filename.replace(/\.txt$/i, '') || 'script';
       downloadText(`${base}-draft-schema.json`, exportDraftActionSchemaJson(schema), 'application/json');
+      break;
+    }
+    case 'export-catalog-audit': {
+      if (!p) break;
+      const audit = buildCatalogGapAudit(p, nowIso);
+      downloadText('catalog-gap-audit.json', exportCatalogGapAuditJson(audit), 'application/json');
+      break;
+    }
+    case 'ignore-catalog-finding':
+      if (id) state.catalogAuditIgnored.add(id);
+      render();
+      break;
+    case 'repair-stale-field': {
+      if (!p || !id) break;
+      const variableName = el.dataset.variable;
+      const schema = p.curatedSchemas.find((s) => s.id === id);
+      if (!schema || !variableName) break;
+      const audit = buildCatalogGapAudit(p, nowIso);
+      const finding = audit.staleSchemaFields.find((f) => f.schemaId === id && f.classification.variableName === variableName);
+      if (!finding) break;
+      const afterDescription = finding.suggestedType === 'reference-select'
+        ? `reference-select (catalog: ${finding.classification.catalogId})`
+        : `select (${finding.classification.boundedPresetId})`;
+      const confirmed = window.confirm(
+        `Repair "${variableName}" on "${schema.label}"?\n\nBefore: ${finding.currentType}\nAfter: ${afterDescription}\n\nThis only changes this one field's type/options — nothing else about the schema.`,
+      );
+      if (!confirmed) break;
+      upsertCuratedSchema(p.curatedSchemas, applyStaleFieldRepair(schema, finding));
+      commit();
       break;
     }
     case 'export-reviewed-preset': {
@@ -3155,6 +3342,7 @@ export async function init(): Promise<void> {
     (e) => {
       const el = e.target as HTMLElement;
       if (el.id === 'scripts-advanced-details') state.scriptsAdvancedOpen = (el as HTMLDetailsElement).open;
+      if (el.id === 'catalog-audit-details') state.catalogAuditOpen = (el as HTMLDetailsElement).open;
     },
     true,
   );

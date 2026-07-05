@@ -22,6 +22,7 @@ import {
   NPC_FIELD_OPTIONS,
 } from '../src/core/curatedSchemas.js';
 import { UNKNOWN_TARGET } from '../src/core/gameTarget.js';
+import { GEN3_ITEMS_CATALOG, GEN3_MOVES_CATALOG } from '../src/reference/index.js';
 import {
   importProjectJson,
   exportProjectJson,
@@ -562,6 +563,32 @@ describe('toActionTemplateShape — reference-select fields resolve options from
     });
     const template = toActionTemplateShape(schema);
     expect(template.fields[0].options?.some((o) => o.value === '13' && o.label === 'Potion — 13')).toBe(true);
+  });
+
+  it('every resolved gen3-items option writes a numeric value string, never the display name, across the now-complete catalog', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Item', label: 'Item', type: 'reference-select', required: false, variableName: 'HeldItem', referenceCatalogId: 'gen3-items' },
+      ],
+    });
+    const options = toActionTemplateShape(schema).fields[0].options ?? [];
+    expect(options).toHaveLength(GEN3_ITEMS_CATALOG.entries.length);
+    for (const option of options) {
+      expect(option.value).toMatch(/^\d+$/);
+    }
+  });
+
+  it('every resolved gen3-moves option writes a numeric value string, never the display name, across the now-complete catalog', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Move', label: 'Move', type: 'reference-select', required: true, variableName: 'Move', referenceCatalogId: 'gen3-moves' },
+      ],
+    });
+    const options = toActionTemplateShape(schema).fields[0].options ?? [];
+    expect(options).toHaveLength(GEN3_MOVES_CATALOG.entries.length);
+    for (const option of options) {
+      expect(option.value).toMatch(/^\d+$/);
+    }
   });
 
   it('falls back to any hand-set options rather than crashing when referenceCatalogId is missing', () => {

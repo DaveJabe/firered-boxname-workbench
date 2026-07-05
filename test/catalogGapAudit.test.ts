@@ -158,7 +158,7 @@ describe('buildCatalogGapAudit', () => {
     expect(need!.suggestedByFields.length).toBeGreaterThan(0);
   });
 
-  it('reports a partial (non-empty) catalog that is actually in use by a schema', () => {
+  it('does not report gen3-items as a "partial catalog in use" anymore, now that it is complete', () => {
     const script = makeScript('a', ITEM_SCRIPT);
     const schema: CuratedActionSchema = {
       id: 'schema-1', label: 'Toy', description: '', target: UNKNOWN_TARGET, scriptId: 'a', scriptFilename: 'a.txt',
@@ -167,9 +167,7 @@ describe('buildCatalogGapAudit', () => {
     };
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const used = audit.partialCatalogsUsed.find((c) => c.catalogId === 'gen3-items');
-    expect(used).toBeDefined();
-    expect(used!.usedBySchemaIds).toContain('schema-1');
+    expect(audit.partialCatalogsUsed.some((c) => c.catalogId === 'gen3-items')).toBe(false);
   });
 
   it('reports an unrecognized variable as an unknown field needing manual review', () => {
@@ -302,15 +300,23 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     expect(grouped.readyActions[0]!.variants.map((v) => v.target)).toEqual([FR_EN_10, FR_EN_11, LG_EN_10]);
   });
 
-  it('a ready variant with a stale/catalog-needing field appears in both readyActions and variantsWithGaps', () => {
+  it('a ready variant with a stale field and a catalog-needing field appears in both readyActions and variantsWithGaps', () => {
     const script = makeScript('a', ITEM_SCRIPT);
-    const schema = makeVariantSchema(); // heldItem is plain text -> classifies as needing gen3-items
+    const schema = makeVariantSchema({
+      fields: [
+        // gen3-items is now complete -> a plain-text heldItem field is a stale field, not a catalog need.
+        { key: 'heldItem', label: 'Held item', type: 'text', required: false, variableName: 'heldItem' },
+        // gen3-species is still a stub (zero-entry) catalog -> a genuine catalog need.
+        { key: 'species', label: 'Species', type: 'text', required: false, variableName: 'species' },
+      ],
+    });
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
     const grouped = groupCatalogAuditBySupportedAction(project, audit);
 
     const variant = grouped.readyActions[0]!.variants[0]!;
-    expect(variant.catalogNeeds.some((c) => c.catalogId === 'gen3-items')).toBe(true);
+    expect(variant.catalogNeeds.some((c) => c.catalogId === 'gen3-species')).toBe(true);
+    expect(variant.staleFieldRepairs.some((f) => f.classification.catalogId === 'gen3-items')).toBe(true);
     expect(grouped.variantsWithGaps.some((v) => v.schemaId === schema.id)).toBe(true);
   });
 

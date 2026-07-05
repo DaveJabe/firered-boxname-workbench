@@ -66,10 +66,15 @@ number box — e.g. a "Move" field shows "Thunderbolt — 85" instead of just
   informational only. Existing local scripts/generators remain the source
   of truth — a catalog lookup is never a claim that a value is correct for
   your specific game revision.
-- **Often deliberately partial.** The current `gen3-items`/`gen3-moves`
-  catalogs cover only entries whose index is stable and well-documented,
-  not the full item/move list — this is surfaced in the UI (a "(partial)"
-  label) and in `ReferenceCatalog.partial`, never hidden.
+- **Completeness is stated per catalog, not assumed.** `gen3-moves` covers
+  all 354 Generation III move indices (`partial: false`). `gen3-items`
+  currently covers Poké Balls, core medicine, the main vitamins, and all
+  TMs/HMs, but not Shards, Berries, Mail, or most Key/held items
+  (`partial: true`) — this is surfaced in the UI (a "(partial)" label next
+  to the catalog name) and in `ReferenceCatalog.partial`, never hidden. A
+  catalog marked complete still isn't independently verified against a
+  live external source — see each catalog file's own source note for what
+  "compiled from general knowledge" versus "cross-checked" means for it.
 - **Reviewed before adding.** New catalogs or entries should be manually
   checked against a real reference before being checked in, the same way a
   curated schema itself is manually reviewed before being marked `reviewed`.

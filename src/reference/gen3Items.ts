@@ -2,16 +2,16 @@
 // only to make curated-schema "item" fields show a friendly name/value
 // dropdown instead of a raw number box.
 //
-// SOURCE: hand-entered from publicly documented Generation III item index
-// numbering (the kind of table Bulbapedia's "List of items by index number
-// in Generation III" publishes: decimal index, hex value, and item name).
-// This file is NOT fetched, scraped, or generated at runtime — it is
-// static source code, reviewed and edited like any other file in this
-// repo. It is DELIBERATELY PARTIAL: only items whose index is stable and
-// well-documented across Generation III games are included here. Treat any
-// value not listed as unconfirmed, and double-check anything you rely on
-// against your own reference before trusting it — this app's scripts and
-// generator remain the source of truth, not this catalog.
+// SOURCE: compiled from general knowledge of Generation III's item index
+// numbering — the same index order documented in tables like Bulbapedia's
+// "List of items by index number in Generation III" (decimal index, hex
+// value, item name). This file is NOT fetched, scraped, or generated at
+// runtime; it is static source code, hand-entered and reviewed like any
+// other file in this repo. It is STILL DELIBERATELY PARTIAL — see the
+// sourceNote below for exactly what's covered and what's missing. Treat
+// any value not listed as unconfirmed, and double-check anything you rely
+// on against your own reference before trusting it — this app's scripts
+// and generator remain the source of truth, not this catalog.
 
 import type { ReferenceCatalog } from '../core/referenceData.js';
 
@@ -21,10 +21,14 @@ export const GEN3_ITEMS_CATALOG: ReferenceCatalog = {
   description: 'Item name/index lookup for curated schema "item" fields.',
   partial: true,
   sourceNote:
-    'Hand-entered from publicly documented Generation III item index numbering ' +
-    '(e.g. Bulbapedia\'s "List of items by index number in Generation III"). ' +
-    'Covers only the Poké Balls and core medicine/status items whose index is ' +
-    'stable and well-documented across Gen III games — not a complete item list.',
+    'Compiled from general knowledge of Generation III item index numbering ' +
+    '(e.g. as catalogued by Bulbapedia\'s "List of items by index number in ' +
+    'Generation III"), not independently cross-checked against a live external ' +
+    'source in this session. Covers: Poké Balls (1-12), core medicine (13-45), ' +
+    'the main vitamins (63-71), and all TMs/HMs (289-346). Does NOT cover: ' +
+    'Shards/Shoal items, most held/battle items, Berries, Mail, or Key Items ' +
+    '(including FireRed/LeafGreen-specific ones) — those ranges are not yet ' +
+    'in this catalog. Verify anything you rely on for correctness.',
   entries: [
     { value: 1, hex: '0x001', name: 'Master Ball', category: 'Poké Balls' },
     { value: 2, hex: '0x002', name: 'Ultra Ball', category: 'Poké Balls' },
@@ -71,5 +75,72 @@ export const GEN3_ITEMS_CATALOG: ReferenceCatalog = {
     { value: 43, hex: '0x02B', name: 'White Flute', category: 'Medicine' },
     { value: 44, hex: '0x02C', name: 'Berry Juice', category: 'Medicine' },
     { value: 45, hex: '0x02D', name: 'Sacred Ash', category: 'Medicine' },
+    { value: 63, hex: '0x03F', name: 'HP Up', category: 'Vitamins' },
+    { value: 64, hex: '0x040', name: 'Protein', category: 'Vitamins' },
+    { value: 65, hex: '0x041', name: 'Iron', category: 'Vitamins' },
+    { value: 66, hex: '0x042', name: 'Carbos', category: 'Vitamins' },
+    { value: 67, hex: '0x043', name: 'Calcium', category: 'Vitamins' },
+    { value: 68, hex: '0x044', name: 'Rare Candy', category: 'Vitamins' },
+    { value: 69, hex: '0x045', name: 'PP Up', category: 'Vitamins' },
+    { value: 70, hex: '0x046', name: 'Zinc', category: 'Vitamins' },
+    { value: 71, hex: '0x047', name: 'PP Max', category: 'Vitamins' },
+    { value: 289, hex: '0x121', name: 'TM01', category: 'TMs & HMs' },
+    { value: 290, hex: '0x122', name: 'TM02', category: 'TMs & HMs' },
+    { value: 291, hex: '0x123', name: 'TM03', category: 'TMs & HMs' },
+    { value: 292, hex: '0x124', name: 'TM04', category: 'TMs & HMs' },
+    { value: 293, hex: '0x125', name: 'TM05', category: 'TMs & HMs' },
+    { value: 294, hex: '0x126', name: 'TM06', category: 'TMs & HMs' },
+    { value: 295, hex: '0x127', name: 'TM07', category: 'TMs & HMs' },
+    { value: 296, hex: '0x128', name: 'TM08', category: 'TMs & HMs' },
+    { value: 297, hex: '0x129', name: 'TM09', category: 'TMs & HMs' },
+    { value: 298, hex: '0x12A', name: 'TM10', category: 'TMs & HMs' },
+    { value: 299, hex: '0x12B', name: 'TM11', category: 'TMs & HMs' },
+    { value: 300, hex: '0x12C', name: 'TM12', category: 'TMs & HMs' },
+    { value: 301, hex: '0x12D', name: 'TM13', category: 'TMs & HMs' },
+    { value: 302, hex: '0x12E', name: 'TM14', category: 'TMs & HMs' },
+    { value: 303, hex: '0x12F', name: 'TM15', category: 'TMs & HMs' },
+    { value: 304, hex: '0x130', name: 'TM16', category: 'TMs & HMs' },
+    { value: 305, hex: '0x131', name: 'TM17', category: 'TMs & HMs' },
+    { value: 306, hex: '0x132', name: 'TM18', category: 'TMs & HMs' },
+    { value: 307, hex: '0x133', name: 'TM19', category: 'TMs & HMs' },
+    { value: 308, hex: '0x134', name: 'TM20', category: 'TMs & HMs' },
+    { value: 309, hex: '0x135', name: 'TM21', category: 'TMs & HMs' },
+    { value: 310, hex: '0x136', name: 'TM22', category: 'TMs & HMs' },
+    { value: 311, hex: '0x137', name: 'TM23', category: 'TMs & HMs' },
+    { value: 312, hex: '0x138', name: 'TM24', category: 'TMs & HMs' },
+    { value: 313, hex: '0x139', name: 'TM25', category: 'TMs & HMs' },
+    { value: 314, hex: '0x13A', name: 'TM26', category: 'TMs & HMs' },
+    { value: 315, hex: '0x13B', name: 'TM27', category: 'TMs & HMs' },
+    { value: 316, hex: '0x13C', name: 'TM28', category: 'TMs & HMs' },
+    { value: 317, hex: '0x13D', name: 'TM29', category: 'TMs & HMs' },
+    { value: 318, hex: '0x13E', name: 'TM30', category: 'TMs & HMs' },
+    { value: 319, hex: '0x13F', name: 'TM31', category: 'TMs & HMs' },
+    { value: 320, hex: '0x140', name: 'TM32', category: 'TMs & HMs' },
+    { value: 321, hex: '0x141', name: 'TM33', category: 'TMs & HMs' },
+    { value: 322, hex: '0x142', name: 'TM34', category: 'TMs & HMs' },
+    { value: 323, hex: '0x143', name: 'TM35', category: 'TMs & HMs' },
+    { value: 324, hex: '0x144', name: 'TM36', category: 'TMs & HMs' },
+    { value: 325, hex: '0x145', name: 'TM37', category: 'TMs & HMs' },
+    { value: 326, hex: '0x146', name: 'TM38', category: 'TMs & HMs' },
+    { value: 327, hex: '0x147', name: 'TM39', category: 'TMs & HMs' },
+    { value: 328, hex: '0x148', name: 'TM40', category: 'TMs & HMs' },
+    { value: 329, hex: '0x149', name: 'TM41', category: 'TMs & HMs' },
+    { value: 330, hex: '0x14A', name: 'TM42', category: 'TMs & HMs' },
+    { value: 331, hex: '0x14B', name: 'TM43', category: 'TMs & HMs' },
+    { value: 332, hex: '0x14C', name: 'TM44', category: 'TMs & HMs' },
+    { value: 333, hex: '0x14D', name: 'TM45', category: 'TMs & HMs' },
+    { value: 334, hex: '0x14E', name: 'TM46', category: 'TMs & HMs' },
+    { value: 335, hex: '0x14F', name: 'TM47', category: 'TMs & HMs' },
+    { value: 336, hex: '0x150', name: 'TM48', category: 'TMs & HMs' },
+    { value: 337, hex: '0x151', name: 'TM49', category: 'TMs & HMs' },
+    { value: 338, hex: '0x152', name: 'TM50', category: 'TMs & HMs' },
+    { value: 339, hex: '0x153', name: 'HM01', category: 'TMs & HMs' },
+    { value: 340, hex: '0x154', name: 'HM02', category: 'TMs & HMs' },
+    { value: 341, hex: '0x155', name: 'HM03', category: 'TMs & HMs' },
+    { value: 342, hex: '0x156', name: 'HM04', category: 'TMs & HMs' },
+    { value: 343, hex: '0x157', name: 'HM05', category: 'TMs & HMs' },
+    { value: 344, hex: '0x158', name: 'HM06', category: 'TMs & HMs' },
+    { value: 345, hex: '0x159', name: 'HM07', category: 'TMs & HMs' },
+    { value: 346, hex: '0x15A', name: 'HM08', category: 'TMs & HMs' },
   ],
 };

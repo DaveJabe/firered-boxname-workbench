@@ -24,7 +24,12 @@ function resolveFieldOptions(field: CuratedSchemaField): readonly ActionFieldOpt
   if (field.type !== 'reference-select') return field.options;
   const catalog = field.referenceCatalogId ? getReferenceCatalog(field.referenceCatalogId) : undefined;
   if (!catalog) return field.options;
-  return catalog.entries.map((e) => ({ value: String(e.value), label: referenceEntryLabel(e) }));
+  return catalog.entries.map((e) => {
+    const searchTerms = [e.hex, e.category, ...(e.aliases ?? [])].filter((t): t is string => Boolean(t));
+    const option: ActionFieldOption = { value: String(e.value), label: referenceEntryLabel(e) };
+    if (searchTerms.length > 0) option.searchText = searchTerms.join(' ');
+    return option;
+  });
 }
 
 /** Adapt a CuratedActionSchema to the same shape the Action Builder already

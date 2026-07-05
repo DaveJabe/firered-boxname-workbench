@@ -768,7 +768,9 @@ function referenceSelectFieldHtml(
   const current = String(value ?? allOptions[0]?.value ?? '');
   const currentOption = allOptions.find((o) => o.value === current);
   const q = searchText.trim().toLowerCase();
-  const filtered = q ? allOptions.filter((o) => o.label.toLowerCase().includes(q)) : allOptions;
+  const filtered = q
+    ? allOptions.filter((o) => o.label.toLowerCase().includes(q) || (o.searchText ?? '').toLowerCase().includes(q))
+    : allOptions;
   const visible = !q || filtered.some((o) => o.value === current) || !currentOption
     ? filtered
     : [currentOption, ...filtered];

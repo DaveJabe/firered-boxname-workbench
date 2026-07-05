@@ -63,23 +63,37 @@ describe('referenceEntryLabel', () => {
   });
 });
 
-describe('gen3-items catalog (real, checked-in, partial)', () => {
-  it('is registered under id "gen3-items" and marked partial', () => {
+describe('gen3-items catalog (real, checked-in, still partial)', () => {
+  it('is registered under id "gen3-items" and honestly marked partial', () => {
     expect(GEN3_ITEMS_CATALOG.id).toBe('gen3-items');
     expect(GEN3_ITEMS_CATALOG.partial).toBe(true);
     expect(GEN3_ITEMS_CATALOG.entries.length).toBeGreaterThan(0);
   });
 
-  it('looks up a few known stable entries by numeric value', () => {
+  it('looks up known stable entries by numeric value, including the newly added vitamins and TMs/HMs', () => {
     expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 1)?.name).toBe('Master Ball');
     expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 4)?.name).toBe('Poké Ball');
     expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 13)?.name).toBe('Potion');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 68)?.name).toBe('Rare Candy');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 289)?.name).toBe('TM01');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 338)?.name).toBe('TM50');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 339)?.name).toBe('HM01');
+    expect(lookupReferenceEntry(GEN3_ITEMS_CATALOG, 346)?.name).toBe('HM08');
   });
 
   it('searches by name', () => {
     const results = searchReferenceEntries(GEN3_ITEMS_CATALOG, 'potion');
     expect(results.some((e) => e.name === 'Potion')).toBe(true);
     expect(results.some((e) => e.name === 'Super Potion')).toBe(true);
+  });
+
+  it('searches by hex value', () => {
+    const results = searchReferenceEntries(GEN3_ITEMS_CATALOG, '0x044'); // Rare Candy
+    expect(results.map((e) => e.name)).toEqual(['Rare Candy']);
+  });
+
+  it('searches TMs/HMs by numeric value', () => {
+    expect(searchReferenceEntries(GEN3_ITEMS_CATALOG, '338').map((e) => e.name)).toEqual(['TM50']);
   });
 
   it('every entry has a decimal value, a name, and a hex string', () => {
@@ -89,18 +103,38 @@ describe('gen3-items catalog (real, checked-in, partial)', () => {
       expect(entry.hex).toMatch(/^0x[0-9A-F]+$/);
     }
   });
-});
 
-describe('gen3-moves catalog (real, checked-in, partial)', () => {
-  it('is registered under id "gen3-moves" and marked partial', () => {
-    expect(GEN3_MOVES_CATALOG.id).toBe('gen3-moves');
-    expect(GEN3_MOVES_CATALOG.partial).toBe(true);
+  it('has unique numeric values', () => {
+    const values = GEN3_ITEMS_CATALOG.entries.map((e) => e.value);
+    expect(new Set(values).size).toBe(values.length);
   });
 
-  it('looks up a few known stable entries by numeric value', () => {
+  it('is sorted by numeric value', () => {
+    const values = GEN3_ITEMS_CATALOG.entries.map((e) => e.value);
+    expect(values).toEqual([...values].sort((a, b) => a - b));
+  });
+
+  it('has no duplicate display names except intentionally-aliased ones (e.g. the drink items)', () => {
+    const names = GEN3_ITEMS_CATALOG.entries.map((e) => e.name);
+    const counts = new Map();
+    for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1);
+    const dupes = [...counts.entries()].filter(([, c]) => c > 1);
+    expect(dupes).toEqual([]);
+  });
+});
+
+describe('gen3-moves catalog (real, checked-in, now complete)', () => {
+  it('is registered under id "gen3-moves" and covers all 354 Generation III move indices', () => {
+    expect(GEN3_MOVES_CATALOG.id).toBe('gen3-moves');
+    expect(GEN3_MOVES_CATALOG.partial).toBe(false);
+    expect(GEN3_MOVES_CATALOG.entries).toHaveLength(354);
+  });
+
+  it('looks up known stable entries by numeric value', () => {
     expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 1)?.name).toBe('Pound');
     expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 57)?.name).toBe('Surf');
     expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 85)?.name).toBe('Thunderbolt');
+    expect(lookupReferenceEntry(GEN3_MOVES_CATALOG, 354)?.name).toBe('Psycho Boost');
   });
 
   it('searches by name', () => {
@@ -108,9 +142,28 @@ describe('gen3-moves catalog (real, checked-in, partial)', () => {
     expect(results.map((e) => e.name)).toEqual(expect.arrayContaining(['Thunder Punch', 'Thunderbolt', 'Thunder Wave', 'Thunder Shock', 'Thunder']));
   });
 
-  it('every entry has a unique numeric value', () => {
+  it('searches by numeric value string', () => {
+    expect(searchReferenceEntries(GEN3_MOVES_CATALOG, '354').map((e) => e.name)).toEqual(['Psycho Boost']);
+  });
+
+  it('has unique numeric values covering 1-354 with no gaps', () => {
     const values = GEN3_MOVES_CATALOG.entries.map((e) => e.value);
-    expect(new Set(values).size).toBe(values.length);
+    expect(new Set(values).size).toBe(354);
+    expect(Math.min(...values)).toBe(1);
+    expect(Math.max(...values)).toBe(354);
+  });
+
+  it('is sorted by numeric value', () => {
+    const values = GEN3_MOVES_CATALOG.entries.map((e) => e.value);
+    expect(values).toEqual([...values].sort((a, b) => a - b));
+  });
+
+  it('has no duplicate display names except intentionally-aliased ones', () => {
+    const names = GEN3_MOVES_CATALOG.entries.map((e) => e.name);
+    const counts = new Map();
+    for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1);
+    const dupes = [...counts.entries()].filter(([, c]) => c > 1);
+    expect(dupes).toEqual([]);
   });
 });
 

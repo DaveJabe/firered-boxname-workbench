@@ -495,4 +495,15 @@ describe('toActionTemplateShape — reference-select fields resolve options from
     const template = toActionTemplateShape(schema);
     expect(template.fields[0].options).toEqual([{ value: 'x', label: 'X' }]);
   });
+
+  it('carries hex/category/aliases into each option\'s searchText, for hex-value search in the Action Builder', () => {
+    const schema = makeCuratedSchema({
+      fields: [
+        { key: 'Item', label: 'Item', type: 'reference-select', required: false, variableName: 'HeldItem', referenceCatalogId: 'gen3-items' },
+      ],
+    });
+    const template = toActionTemplateShape(schema);
+    const rareCandy = template.fields[0].options?.find((o) => o.value === '68');
+    expect(rareCandy?.searchText).toContain('0x044');
+  });
 });

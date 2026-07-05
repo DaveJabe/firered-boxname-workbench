@@ -237,6 +237,12 @@ export type ReferenceCatalogId = 'gen3-items' | 'gen3-moves';
 export interface ActionFieldOption {
   value: string;
   label: string;
+  /**
+   * Extra, not-displayed search terms for this option (e.g. a reference
+   * catalog entry's hex value/aliases/category) — matched in addition to
+   * the label when a search box narrows a 'reference-select' field.
+   */
+  searchText?: string;
 }
 
 /** The user's filled-in inputs for one action template, before generation. */

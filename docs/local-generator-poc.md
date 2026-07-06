@@ -209,15 +209,77 @@ as found in the spike doc.
 - All three are exercised by mocked, artifact-free tests in
   `test/localEsharkGeneratorPoc.test.ts`.
 
-## Caveat: `npm run build` copies the local artifact too
+## Safety guards
 
-Vite copies everything under `public/` into `dist/` verbatim as part of any
-build — gitignore only governs `git`, not that copy step. If the local
-artifact is present at `public/local-eshark-generator/ace_js.bc.js` when you
-run `npm run build`, it ends up at `dist/local-eshark-generator/ace_js.bc.js`
-too. `dist/` is itself gitignored, so this doesn't risk a commit — but if
-you ever manually copy or deploy `dist/` somewhere else, check first that
-the local artifact isn't sitting in it.
+This experiment is only as safe as its guards, not as safe as good
+intentions — so there are three independent, mechanical ones, each covering
+a different way the unlicensed artifact could otherwise leak out.
+
+### 1. The production build refuses to run if the artifact is present
+
+Vite copies everything under `public/` into `dist/` **verbatim** as part of
+any build — gitignore only governs `git`, not that copy step. Left
+unchecked, that means the exact same disk state that makes the dev-only
+panel work locally would also get baked straight into `dist/`, ready to be
+deployed or published by anyone who doesn't know to check first.
+
+`npm run build` now runs
+[`scripts/check-no-local-generator-artifact.mjs`](../scripts/check-no-local-generator-artifact.mjs)
+before anything else (`tsc`, `vite build`). It checks these paths for any
+content and **fails the build** (exit 1, clear message, nothing built) if
+any of them exist:
+
+- `public/local-eshark-generator/ace_js.bc.js`
+- `public/local-eshark-generator/` (the directory generally, in case the
+  artifact ever gets renamed or a sibling file appears there)
+- `.external/`
+- `.local-generator/`
+
+The default is fail-closed on purpose: **a normal `npm run build` on a
+machine with the local artifact present will not produce a `dist/`.** The
+only way past it is an explicit, deliberately unwieldy environment
+variable, meant only for your own private local experiments — never for a
+build whose output might be shared, deployed, or published:
+
+```sh
+FBW_ALLOW_LOCAL_GENERATOR_ARTIFACT=1 npm run build
+```
+
+If you use that override, the resulting `dist/` **does** contain the
+artifact (see the copy-verbatim behavior above) — treat that `dist/` as
+private too, same as the artifact itself. Run
+`npm run guard:no-local-artifact` any time to check current disk state
+without doing a full build.
+
+### 2. Committing the artifact is blocked even with `git add -f`
+
+`.gitignore` stops a plain `git add .`/`git add public/` from picking up
+the artifact, but doesn't stop a deliberate or accidental `git add -f`.
+[`scripts/check-artifact-not-tracked.mjs`](../scripts/check-artifact-not-tracked.mjs)
+checks `git ls-files` and `git diff --cached --name-only` for `ace_js.bc.js`
+at any path and fails if found. Run it manually with
+`npm run guard:artifact-not-tracked`.
+
+This project has no existing pre-commit/pre-push hook framework (no husky,
+no simple-git-hooks) — this doesn't add one either, since that's a bigger
+decision than this experiment's own scope. Instead, there's an **opt-in**
+tracked hook at [`.githooks/pre-commit`](../.githooks/pre-commit) that
+calls the same script. Enable it once, yourself, if you want it:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Nobody's git config is changed automatically by anything in this repo.
+
+### 3. CI never depends on the artifact
+
+Nothing in this repo's checks (`typecheck`, `test`, `audit:network`,
+`build`, `npm audit`) requires the artifact to exist — the build guard
+above means CI (which never has it) always takes the "no artifact found"
+path and proceeds normally. The dev-only panel's own tests
+(`test/localEsharkGeneratorPoc.test.ts`) mock the worker boundary entirely,
+so they never touch the real artifact either.
 
 ## Removing this experiment cleanly
 
@@ -228,8 +290,12 @@ rm -rf public/local-eshark-generator/          # the local artifact, if you have
 rm public/local-generator-poc-worker.js
 rm -rf src/experimental/
 rm test/localEsharkGeneratorPoc.test.ts
+rm scripts/check-no-local-generator-artifact.mjs scripts/check-artifact-not-tracked.mjs
+rm -rf .githooks/
 # then remove the "Local generator POC" panel block and its handleClick
-# cases from src/ui/app.ts, and this file plus the .gitignore entries.
+# cases from src/ui/app.ts, the guard/hook references from package.json's
+# "build" script and "guard:*" entries, and this file plus the .gitignore
+# entries.
 ```
 
 Nothing outside those files references any of this.

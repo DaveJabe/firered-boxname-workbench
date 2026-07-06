@@ -188,6 +188,20 @@ export function scanScript(script: ScriptFile, nowIso: () => string): ScriptScan
   return result;
 }
 
+/**
+ * The script's `@@ exit = "..."` header directive value, if any — a minimal
+ * extraction (reusing the same header/directive scanning as scanScript)
+ * for callers that only need this one value and don't want to run/store a
+ * full scan first (e.g. Run Script's "Generator input" section, which must
+ * work even for a script the user hasn't clicked "Run scanner" on yet).
+ */
+export function extractExitDirectiveValue(rawText: string): string | undefined {
+  const lines = splitLines(rawText);
+  const markerIdx = findMarkerLineIndex(lines);
+  const headerLines = markerIdx === null ? [] : lines.slice(0, markerIdx);
+  return directiveValue(scanDirectives(headerLines), 'exit');
+}
+
 /** Build an informational draft schema from a scan. Always isDraft: true. */
 export function buildDraftActionSchema(
   script: ScriptFile,

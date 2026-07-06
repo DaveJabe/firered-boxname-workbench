@@ -7,6 +7,15 @@ default, and the upstream generator's license is unresolved — see
 research this builds on. Read that document first if you haven't; this one
 assumes its conclusions.
 
+**Disclaimer:** this app is an independent helper UI, not affiliated with,
+endorsed by, or maintained by E-Sh4rk. E-Sh4rk's own CodeGenerator remains
+the source of truth for anything it produces. See
+[docs/attribution.md](./attribution.md) for the full statement. Manual
+paste-back stays the supported public path regardless of anything below —
+what follows is a private, local-only, artifact-guarded exception requiring
+a developer to supply their own untracked copy of the generator artifact,
+never something this app ships or enables by default.
+
 ## What this is, in one paragraph
 
 `src/experimental/localEsharkGeneratorPoc.ts` calls a **local, untracked**

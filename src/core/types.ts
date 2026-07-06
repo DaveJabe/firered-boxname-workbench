@@ -629,6 +629,40 @@ export interface GeneratorOutputProvenance {
   parserVersion?: number;
 }
 
+// --- Exit-code companion resolution (manual generator workflow) ------------
+//
+// Some E-Sh4rk scripts declare an `@@ exit = "Name"` header directive (see
+// ScriptScanResult.exit above) — the generator resolves that name against a
+// separate, shared "companion" text (upstream files_frlg/exit.txt) that
+// bundles many named exit-code sections together, delimited by a
+// `====...`-style separator line. This app never fetches that companion
+// file specially — see core/exitCompanion.ts — it only looks for one among
+// scripts already imported/fetched through the existing pipeline (e.g.
+// exit.txt arrives as a plain ScriptFile the same way every other .txt
+// file does). Resolution is always computed fresh from current project
+// state, never persisted, exactly like SupportedAction/CatalogGapAudit.
+
+export type ExitCompanionStatus = 'resolved' | 'missing' | 'no-exit-directive';
+
+export interface ExitCompanionResolution {
+  status: ExitCompanionStatus;
+  /** The script's own `@@ exit = "..."` value — absent only when status is 'no-exit-directive'. */
+  exitName?: string;
+  companionScriptId?: string;
+  companionFilename?: string;
+  companionRelativePath?: string;
+  /** Verbatim, unmodified full text of the companion file — present only when status is 'resolved'. */
+  companionRawText?: string;
+  /** Id of the ScriptPack the companion script itself came from, if any. */
+  companionSourcePackId?: string;
+  companionSourceProfile?: EsharkSourceProfile;
+  companionSourceRef?: string;
+  /** The companion script's own importedAt (or the pack's fetchedAt, if set), for provenance display. */
+  companionImportedAt?: string;
+  /** When this resolution was computed — informational only, never compared or cached. */
+  resolvedAt: string;
+}
+
 export interface SchemaReviewCase {
   id: string;
   /** The project curated schema this case verifies, once one exists. */

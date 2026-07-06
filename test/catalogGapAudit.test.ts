@@ -337,7 +337,7 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     ];
     const project = makeProject(scripts, schemas);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
 
     expect(grouped.readyActions).toHaveLength(1);
     expect(grouped.readyActions[0]!.actionKey).toBe('teach-any-move');
@@ -358,7 +358,7 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     });
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
 
     const variant = grouped.readyActions[0]!.variants[0]!;
     expect(variant.catalogNeeds.some((c) => c.catalogId === 'frlg-flags')).toBe(true);
@@ -372,7 +372,7 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     const schema = makeVariantSchema({ status: 'draft' });
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
 
     expect(grouped.readyActions).toEqual([]);
     expect(grouped.variantsWithGaps.some((v) => v.schemaId === schema.id)).toBe(true);
@@ -386,7 +386,7 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     });
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
 
     expect(grouped.variantsWithGaps).toEqual([]);
     expect(grouped.readyActions[0]!.variants[0]!.catalogNeeds).toEqual([]);
@@ -397,7 +397,7 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     const schema = makeVariantSchema();
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
     expect(grouped.readyActions[0]!.variants[0]!.verificationStatus).toBe('no-cases');
   });
 
@@ -406,7 +406,7 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     const schema = makeVariantSchema({ status: 'draft' });
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
     expect(grouped.variantsWithGaps[0]!.verificationStatus).toBe('not-available');
   });
 
@@ -421,14 +421,14 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
       inputValues: { heldItem: 13 }, expectedChangedVariables: ['heldItem'], forbiddenChangedVariables: [], status: 'passing',
     }];
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
     expect(grouped.readyActions[0]!.variants[0]!.verificationStatus).toBe('passing');
   });
 
   it('a script with no curated schema at all is grouped under unsupportedScripts, with its own candidate-level catalog needs', () => {
     const project = makeProject([makeScript('a', FLAG_SCRIPT)]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
 
     expect(grouped.unsupportedScripts).toHaveLength(1);
     expect(grouped.unsupportedScripts[0]!.scriptFilename).toBe('a.txt');
@@ -440,14 +440,14 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     const schema = makeVariantSchema();
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
     expect(grouped.unsupportedScripts).toEqual([]);
   });
 
   it('passes unknownFields through unchanged from the flat audit', () => {
     const project = makeProject([makeScript('a', UNKNOWN_SCRIPT)]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
     expect(grouped.unknownFields).toEqual(audit.unknownFields);
     expect(grouped.unknownFields.some((f) => f.variableName === 'someTotallyMadeUpThing')).toBe(true);
   });
@@ -457,7 +457,58 @@ describe('groupCatalogAuditBySupportedAction — grouping by supported action/ac
     const schema = makeVariantSchema({ status: 'disabled' });
     const project = makeProject([script], [schema]);
     const audit = buildCatalogGapAudit(project, () => ISO);
-    const grouped = groupCatalogAuditBySupportedAction(project, audit);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
     expect(grouped.readyActions).toEqual([]);
+  });
+});
+
+describe('generatorInputReadiness — separate signal from catalog/verification status', () => {
+  const EXIT_SCRIPT = ['@@ exit = "ToyExit"', 'heldItem = 5', '@@', 'PretendBodyLine'].join('\n');
+  const COMPANION_SCRIPT = ['@@ filename = "ToyExit"', '@@', 'toy body'].join('\n');
+
+  it("is 'not-applicable' for a variant whose script has no exit directive", () => {
+    const script = makeScript('a', ITEM_SCRIPT);
+    const schema = makeVariantSchema();
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
+    expect(grouped.readyActions[0]!.variants[0]!.generatorInputReadiness).toBe('not-applicable');
+    expect(grouped.actionsBlockedByMissingExitCompanion).toEqual([]);
+  });
+
+  it("is 'missing-exit-companion' and appears in actionsBlockedByMissingExitCompanion when no companion resolves the exit directive", () => {
+    const script = makeScript('a', EXIT_SCRIPT);
+    const schema = makeVariantSchema();
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
+
+    expect(grouped.readyActions[0]!.variants[0]!.generatorInputReadiness).toBe('missing-exit-companion');
+    expect(grouped.actionsBlockedByMissingExitCompanion).toHaveLength(1);
+    expect(grouped.actionsBlockedByMissingExitCompanion[0]!.schemaId).toBe(schema.id);
+  });
+
+  it("is 'ready' and absent from actionsBlockedByMissingExitCompanion once a companion resolves the exit directive", () => {
+    const script = makeScript('a', EXIT_SCRIPT);
+    const companion = makeScript('exit', COMPANION_SCRIPT); // filename "exit.txt" — see looksLikeExitCompanionFile's conservative filename check
+    const schema = makeVariantSchema();
+    const project = makeProject([script, companion], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
+
+    expect(grouped.readyActions[0]!.variants[0]!.generatorInputReadiness).toBe('ready');
+    expect(grouped.actionsBlockedByMissingExitCompanion).toEqual([]);
+  });
+
+  it('a variant can be structurally "ready" (fillable) while still blocked by a missing exit companion — the two statuses are independent', () => {
+    const script = makeScript('a', EXIT_SCRIPT);
+    const schema = makeVariantSchema();
+    const project = makeProject([script], [schema]);
+    const audit = buildCatalogGapAudit(project, () => ISO);
+    const grouped = groupCatalogAuditBySupportedAction(project, audit, () => ISO);
+    const variant = grouped.readyActions[0]!.variants[0]!;
+
+    expect(variant.status).toBe('ready');
+    expect(variant.generatorInputReadiness).toBe('missing-exit-companion');
   });
 });

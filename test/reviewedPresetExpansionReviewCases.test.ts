@@ -106,7 +106,7 @@ describe('review case — start-wild-battle-any-pokemon', () => {
 
   it('batch verification reports this case as passing', () => {
     const { project } = setup();
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results).toHaveLength(1);
     expect(batch.results[0]!.status).toBe('draft'); // stored status is still 'draft' until run once
   });
@@ -114,7 +114,7 @@ describe('review case — start-wild-battle-any-pokemon', () => {
   it('once run once, batch verification re-checks it live as passing', () => {
     const { project, schema, reviewCase } = setup();
     reviewCase.status = verifySchemaReviewCase(project, schema, reviewCase).status;
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('passing');
     expect(batch.summary).toEqual({ total: 1, passing: 1, failing: 0, notAvailable: 0, accepted: 0, draft: 0 });
   });
@@ -161,7 +161,7 @@ describe('review case — create-gift-pokemon-bootstrapped', () => {
   it('once run once, batch verification re-checks it live as passing', () => {
     const { project, schema, reviewCase } = setup();
     reviewCase.status = verifySchemaReviewCase(project, schema, reviewCase).status;
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('passing');
   });
 
@@ -216,7 +216,7 @@ describe('review case — change-level-party-slot-6', () => {
   it('once run once, batch verification re-checks it live as passing', () => {
     const { project, schema, reviewCase } = setup();
     reviewCase.status = verifySchemaReviewCase(project, schema, reviewCase).status;
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('passing');
   });
 });
@@ -258,7 +258,7 @@ describe('review case — create-pokemon-from-nothing', () => {
   it('once run once, batch verification re-checks it live as passing', () => {
     const { project, schema, reviewCase } = setup();
     reviewCase.status = verifySchemaReviewCase(project, schema, reviewCase).status;
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('passing');
   });
 });
@@ -295,7 +295,7 @@ describe('review case — get-any-item', () => {
   it('once run once, batch verification re-checks it live as passing', () => {
     const { project, schema, reviewCase } = setup();
     reviewCase.status = verifySchemaReviewCase(project, schema, reviewCase).status;
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('passing');
   });
 });
@@ -353,7 +353,7 @@ describe('all four expansion presets together — batch verification and Run Scr
 
   it('batch verification reports all four new cases as passing, with no accepted/manual override needed', () => {
     const project = setupAll();
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.summary).toEqual({ total: 4, passing: 4, failing: 0, notAvailable: 0, accepted: 0, draft: 0 });
   });
 

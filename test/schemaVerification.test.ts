@@ -9,6 +9,7 @@ import {
   summarizeAllVariantVerifications,
   summarizePresetVerification,
   describeSchemaVerificationSetupError,
+  describeGeneratorInputReadiness,
   runAllSchemaReviewCases,
 } from '../src/core/schemaVerification.js';
 import { GENERATOR_OUTPUT_PARSER_VERSION } from '../src/core/generatorOutputParser.js';
@@ -472,7 +473,7 @@ describe('runAllSchemaReviewCases — batch verification', () => {
         makeReviewCase({ id: 'case-2', schemaId: 'schema-2', variantId: 'schema-2', target: FR_EN_11, status: 'passing' }),
       ],
     );
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results.every((r) => r.status === 'passing')).toBe(true);
     expect(batch.summary).toEqual({ total: 2, passing: 2, failing: 0, notAvailable: 0, accepted: 0, draft: 0 });
   });
@@ -486,7 +487,7 @@ describe('runAllSchemaReviewCases — batch verification', () => {
       inputValues: { Move: 5, MoveSlot: 0 }, // MoveSlot won't actually change -> fails live
     });
     const project = makeProject([makeScript()], [schema1, schema2], [passingCase, failingCase]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
 
     expect(batch.results.find((r) => r.reviewCase.id === 'case-1')!.status).toBe('passing');
     expect(batch.results.find((r) => r.reviewCase.id === 'case-2')!.status).toBe('failing');
@@ -496,7 +497,7 @@ describe('runAllSchemaReviewCases — batch verification', () => {
   it('a detached schema (no scriptId) becomes "not-available", with a clear setupError', () => {
     const schema = makeCleanSchema({ scriptId: undefined, scriptFilename: undefined });
     const project = makeProject([makeScript()], [schema], [makeReviewCase({ status: 'passing' })]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('not-available');
     expect(batch.results[0]!.setupError).toMatch(/detached/i);
     expect(batch.summary.notAvailable).toBe(1);
@@ -505,7 +506,7 @@ describe('runAllSchemaReviewCases — batch verification', () => {
   it('a schema whose linked script no longer exists becomes "not-available"', () => {
     const schema = makeCleanSchema({ scriptId: 'ghost-script' });
     const project = makeProject([], [schema], [makeReviewCase({ status: 'passing' })]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('not-available');
     expect(batch.results[0]!.setupError).toMatch(/no longer exists/i);
   });
@@ -513,14 +514,14 @@ describe('runAllSchemaReviewCases — batch verification', () => {
   it('a disabled schema becomes "not-available"', () => {
     const schema = makeCleanSchema({ status: 'disabled' });
     const project = makeProject([makeScript()], [schema], [makeReviewCase({ status: 'passing' })]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('not-available');
     expect(batch.results[0]!.setupError).toMatch(/disabled/i);
   });
 
   it('a case whose schema no longer exists at all (orphaned) also becomes "not-available"', () => {
     const project = makeProject([makeScript()], [], [makeReviewCase({ schemaId: 'ghost-schema', status: 'passing' })]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('not-available');
   });
 
@@ -528,7 +529,7 @@ describe('runAllSchemaReviewCases — batch verification', () => {
     const schema = makeCleanSchema();
     const brokenButAccepted = makeReviewCase({ status: 'accepted', inputValues: { Move: 5, MoveSlot: 0 } });
     const project = makeProject([makeScript()], [schema], [brokenButAccepted]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('accepted');
     expect(batch.results[0]!.verification).toBeUndefined();
   });
@@ -537,7 +538,7 @@ describe('runAllSchemaReviewCases — batch verification', () => {
     const schema = makeCleanSchema();
     const draftCase = makeReviewCase({ status: 'draft' });
     const project = makeProject([makeScript()], [schema], [draftCase]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.results[0]!.status).toBe('draft');
     expect(batch.results[0]!.verification).toBeUndefined();
     expect(batch.summary.draft).toBe(1);
@@ -546,7 +547,7 @@ describe('runAllSchemaReviewCases — batch verification', () => {
   it('every result carries actionKey/variantId/schemaId/target/scriptFilename so callers can group by any of them', () => {
     const schema = makeCleanSchema();
     const project = makeProject([makeScript()], [schema], [makeReviewCase({ status: 'passing' })]);
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     const result = batch.results[0]!;
     expect(result.actionKey).toBe('toy-action');
     expect(result.actionLabel).toBe('Toy schema');
@@ -569,8 +570,67 @@ describe('runAllSchemaReviewCases — batch verification', () => {
         makeReviewCase({ id: 'case-3', schemaId: 'schema-2', variantId: 'schema-2', status: 'draft' }),
       ],
     );
-    const batch = runAllSchemaReviewCases(project);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
     expect(batch.summary.total).toBe(3);
     expect(batch.summary.total).toBe(batch.results.length);
+  });
+});
+
+describe('describeGeneratorInputReadiness — separate from filled-script verification', () => {
+  const TOY_SCRIPT_WITH_EXIT = [
+    '@@ exit = "ToyExit"',
+    'Move = 1',
+    'MoveSlot = 0',
+    '@@',
+    'PretendBodyLine',
+  ].join('\n');
+  const TOY_COMPANION_TEXT = ['@@ filename = "ToyExit"', '@@', 'toy body'].join('\n');
+
+  function makeScriptWithExit(): ScriptFile {
+    return { id: 'script-1', filename: 'toy.txt', rawText: TOY_SCRIPT_WITH_EXIT, importedAt: ISO };
+  }
+
+  it("is 'not-applicable' when the script has no @@ exit directive at all", () => {
+    const project = makeProject([makeScript()], [makeCleanSchema()]);
+    const result = describeGeneratorInputReadiness(makeCleanSchema(), project, () => ISO);
+    expect(result.status).toBe('not-applicable');
+  });
+
+  it("is 'not-applicable' when the schema has no scriptId (detached)", () => {
+    const project = makeProject([makeScriptWithExit()], []);
+    const result = describeGeneratorInputReadiness(makeCleanSchema({ scriptId: undefined }), project, () => ISO);
+    expect(result.status).toBe('not-applicable');
+  });
+
+  it("is 'ready' when the script's exit directive resolves to a companion elsewhere in the project", () => {
+    const companion: ScriptFile = { id: 'companion', filename: 'exit.txt', rawText: TOY_COMPANION_TEXT, importedAt: ISO };
+    const project = makeProject([makeScriptWithExit(), companion], [makeCleanSchema()]);
+    const result = describeGeneratorInputReadiness(makeCleanSchema(), project, () => ISO);
+    expect(result.status).toBe('ready');
+    expect(result.resolution?.status).toBe('resolved');
+  });
+
+  it("is 'missing-exit-companion' when no companion resolves the script's exit directive", () => {
+    const project = makeProject([makeScriptWithExit()], [makeCleanSchema()]);
+    const result = describeGeneratorInputReadiness(makeCleanSchema(), project, () => ISO);
+    expect(result.status).toBe('missing-exit-companion');
+    expect(result.resolution?.status).toBe('missing');
+  });
+
+  it('does not affect filled-script verification status — a passing case stays passing even when its companion is missing', () => {
+    const project = makeProject([makeScriptWithExit()], [makeCleanSchema()], [makeReviewCase({ status: 'passing' })]);
+    const verification = verifySchemaReviewCase(project, makeCleanSchema(), makeReviewCase({ status: 'passing' }));
+    const readiness = describeGeneratorInputReadiness(makeCleanSchema(), project, () => ISO);
+
+    expect(verification.status).toBe('passing');
+    expect(readiness.status).toBe('missing-exit-companion');
+  });
+
+  it('runAllSchemaReviewCases reports generatorInputReadiness per result without changing status', () => {
+    const project = makeProject([makeScriptWithExit()], [makeCleanSchema()], [makeReviewCase({ status: 'passing' })]);
+    const batch = runAllSchemaReviewCases(project, () => ISO);
+    const result = batch.results[0]!;
+    expect(result.status).toBe('passing');
+    expect(result.generatorInputReadiness).toBe('missing-exit-companion');
   });
 });

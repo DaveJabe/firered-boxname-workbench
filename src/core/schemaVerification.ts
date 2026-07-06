@@ -6,11 +6,12 @@
 // executes, assembles, or runs a generator itself — verifying a review case
 // is exactly as safe as filling a script and parsing pasted text by hand.
 
-import type { CuratedActionSchema, GameTarget, GeneratorOutputProvenance, Project, SchemaReviewCase } from './types.js';
+import type { CuratedActionSchema, ExitCompanionResolution, GameTarget, GeneratorOutputProvenance, Project, SchemaReviewCase } from './types.js';
 import { fillScriptFromSchema } from './scriptFiller.js';
 import { parseGeneratorOutput, GENERATOR_OUTPUT_PARSER_VERSION } from './generatorOutputParser.js';
 import { checkTargetCompatibility, targetLabel } from './gameTarget.js';
 import { buildSupportedActionRegistry } from './supportedActionRegistry.js';
+import { resolveExitCompanionForScript } from './exitCompanion.js';
 
 export interface SchemaReviewVerificationResult {
   status: 'passing' | 'failing';
@@ -67,6 +68,44 @@ export function describeSchemaVerificationSetupError(schema: CuratedActionSchema
     return 'The script this schema was linked to no longer exists in this project — cannot verify.';
   }
   return undefined;
+}
+
+// --- Generator input readiness (exit-code companion) ------------------------
+//
+// Distinct from filled-script verification (passing/failing) above: a
+// script can fill and verify perfectly while still being unusable in the
+// real external generator if its `@@ exit = "..."` companion text hasn't
+// been found. This is reported as its own, separate readiness signal —
+// never folded into SchemaReviewVerificationResult.status or
+// SupportedActionVariantStatus — so an existing passing review case never
+// starts "failing" just because a companion is missing.
+
+export type GeneratorInputReadiness = 'not-applicable' | 'ready' | 'missing-exit-companion';
+
+export interface GeneratorInputReadinessResult {
+  status: GeneratorInputReadiness;
+  /** Present whenever the script has an `@@ exit = "..."` directive, i.e. whenever status isn't the "no directive at all" flavor of 'not-applicable'. */
+  resolution?: ExitCompanionResolution;
+}
+
+/**
+ * Whether a schema's linked script is ready for the manual generator
+ * workflow, exit-companion-wise. 'not-applicable' covers both "no script
+ * linked" and "script has no @@ exit directive at all" — neither is a
+ * problem to fix, just nothing to report. Never marks anything
+ * generator-ready when a required companion is missing.
+ */
+export function describeGeneratorInputReadiness(
+  schema: CuratedActionSchema,
+  project: Project,
+  nowIso: () => string,
+): GeneratorInputReadinessResult {
+  const script = schema.scriptId ? project.scripts.find((s) => s.id === schema.scriptId) : undefined;
+  if (!script) return { status: 'not-applicable' };
+
+  const resolution = resolveExitCompanionForScript(script, project.scripts, project.scriptPacks, nowIso);
+  if (resolution.status === 'no-exit-directive') return { status: 'not-applicable', resolution };
+  return { status: resolution.status === 'resolved' ? 'ready' : 'missing-exit-companion', resolution };
 }
 
 /**
@@ -276,6 +315,16 @@ export interface SchemaReviewCaseRunResult {
   verification?: SchemaReviewVerificationResult;
   /** Present only when status is 'not-available' — why this case couldn't be verified at all. */
   setupError?: string;
+  /**
+   * Independent of `status`/`verification` above — whether this case's
+   * script has an @@ exit directive and, if so, whether its companion text
+   * was found. A case can be status 'passing' and still have
+   * generatorInputReadiness 'missing-exit-companion': filled-script
+   * verification and real-generator readiness are deliberately separate
+   * signals (see schemaVerification.ts's describeGeneratorInputReadiness).
+   * Present whenever a schema was resolved for this case, regardless of status.
+   */
+  generatorInputReadiness?: GeneratorInputReadiness;
 }
 
 export interface SchemaReviewCaseBatchSummary {
@@ -308,7 +357,7 @@ export interface SchemaReviewCaseBatchResult {
  *    doesn't promote brand-new drafts on a human's behalf;
  *  - everything else is freshly re-verified via verifySchemaReviewCase.
  */
-export function runAllSchemaReviewCases(project: Project): SchemaReviewCaseBatchResult {
+export function runAllSchemaReviewCases(project: Project, nowIso: () => string): SchemaReviewCaseBatchResult {
   const registry = buildSupportedActionRegistry(project);
   const variantsBySchemaId = new Map(
     registry.flatMap((action) => action.variants.map((variant) => [variant.schemaId, { action, variant }] as const)),
@@ -336,6 +385,7 @@ export function runAllSchemaReviewCases(project: Project): SchemaReviewCaseBatch
       variantId: schema.id,
       schemaId: schema.id,
       target: schema.target,
+      generatorInputReadiness: describeGeneratorInputReadiness(schema, project, nowIso).status,
     };
     if (schema.actionKey) base.actionKey = schema.actionKey;
     if (matchedVariant) base.actionLabel = matchedVariant.action.label;

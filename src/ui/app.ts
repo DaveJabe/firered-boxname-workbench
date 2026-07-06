@@ -1129,6 +1129,26 @@ function filledScriptSection(result: FilledScriptResult): string {
     </div>`;
 }
 
+/** The live E-Sh4rk generator's FRLG page — a plain link, never fetched or executed by this app. See docs/attribution.md. */
+const ESHARK_GENERATOR_EXTERNAL_URL = 'https://e-sh4rk.github.io/CodeGenerator/index_frlg.html';
+
+/**
+ * "Open E-Sh4rk generator" affordance — a plain new-tab link, always shown
+ * once a script is linked and filled (regardless of whether it has an exit
+ * directive). Never passes any of this app's data to it automatically —
+ * copy/paste stays the explicit, manual step. See docs/attribution.md for
+ * the independence disclaimer this echoes.
+ */
+function externalGeneratorLinkHtml(): string {
+  return `<div class="card">
+    <p class="muted">
+      <a href="${ESHARK_GENERATOR_EXTERNAL_URL}" target="_blank" rel="noopener noreferrer">Open E-Sh4rk generator (FRLG) ↗</a>
+      <span class="pill">external site</span>
+    </p>
+    <p class="muted">Opens in a new tab. This is E-Sh4rk's own site, not part of this app and not affiliated with it — nothing here sends your filled script, exit companion, or field values to it automatically. Copy/paste them in yourself.</p>
+  </div>`;
+}
+
 /**
  * Compact "Generator input" section — shown only when the linked script has
  * an @@ exit directive (see core/exitCompanion.ts). Deliberately minimal:
@@ -1137,17 +1157,23 @@ function filledScriptSection(result: FilledScriptResult): string {
  * generator; see docs/attribution.md.
  */
 function generatorInputSectionHtml(exitName: string, resolution: ExitCompanionResolution): string {
-  const statusHtml = resolution.status === 'resolved'
+  const resolved = resolution.status === 'resolved';
+  const exitStatusHtml = resolved
     ? `<span class="badge info">resolved${resolution.companionFilename ? ` — from ${escapeHtml(resolution.companionFilename)}` : ''}</span>`
     : `<span class="badge warning">companion not found</span>`;
+  const missingWarningHtml = resolved
+    ? ''
+    : `<p class="muted"><span class="badge warning">Missing exit companion</span> — the filled script can still be copied, but the exit code text this action needs (<code>${escapeHtml(exitName)}</code>) wasn't found among imported scripts. Fetch/import it (see Setup), or paste it in manually in the dev-only local generator POC if you're using that.</p>`;
   return `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
     <h3>Generator input <span class="pill">manual — no generator invoked</span></h3>
-    <p class="muted">Exit: <code>${escapeHtml(exitName)}</code> — ${statusHtml}</p>
+    <p class="muted">Filled script: <span class="badge info">ready</span></p>
+    <p class="muted">Exit: <code>${escapeHtml(exitName)}</code> — ${exitStatusHtml}</p>
+    ${missingWarningHtml}
     <div class="row">
       <button class="btn" data-action="copy-filled-script">Copy filled script</button>
       <button class="btn" data-action="copy-exit-name">Copy exit name</button>
-      <button class="btn" data-action="copy-exit-companion-text"${resolution.status !== 'resolved' ? ' disabled' : ''}>Copy companion text</button>
-      <button class="btn" data-action="copy-generator-input-bundle">Copy generator input bundle</button>
+      <button class="btn" data-action="copy-exit-companion-text"${resolved ? '' : ' disabled'}>Copy exit companion</button>
+      <button class="btn" data-action="copy-generator-input-bundle"${resolved ? '' : ' disabled'} title="${resolved ? '' : 'Needs a resolved exit companion first'}">Copy generator input bundle</button>
     </div>
     <p class="muted">Use the filled script and matching exit code together in your own external E-Sh4rk generator (the source of truth for its output), then paste the result back below.</p>
   </div>`;
@@ -1301,10 +1327,12 @@ function renderActions(): string {
   const ab = state.actionBuilder;
   const selectable = p.curatedSchemas.filter(isSchemaSelectable);
 
+  const introLine = '<p class="muted">Three steps: choose an action, fill its parameters, then generate the result yourself in the external E-Sh4rk generator and paste it back in.</p>';
+
   if (selectable.length === 0) {
     return `<h1>Run Script</h1>
       ${workspaceStatusStripHtml(p)}
-      <p class="muted">Choose a supported action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+      ${introLine}
       <div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
         <h3>Get started</h3>
         <p class="muted">This workspace doesn't have any supported actions yet:</p>
@@ -1333,7 +1361,8 @@ function renderActions(): string {
   if (runnableActions.length === 0) {
     return `<h1>Run Script</h1>
       ${workspaceStatusStripHtml(p)}
-      <p class="muted">Choose a supported action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+      ${introLine}
+      <h2>Step 1 of 3 <span class="pill">Choose action</span></h2>
       ${targetCard}
       <div class="card" style="border-color:#e0a458;background:#fffaf2">
         <p class="muted">No supported action is ready for this target yet. Review a schema, or apply a reviewed preset for it, in Manage Scripts.</p>
@@ -1372,17 +1401,25 @@ function renderActions(): string {
       </div>`
     : '';
 
-  // Compact "Generator input" section — only once a script is both linked,
-  // filled, and declares an @@ exit directive; nothing extra otherwise. See
-  // core/exitCompanion.ts and docs/local-generator-poc.md.
+  // Compact "Generator input" section — only once a script is linked,
+  // successfully filled (no errors), and declares an @@ exit directive;
+  // nothing extra otherwise. See core/exitCompanion.ts and
+  // docs/local-generator-poc.md.
+  const filledOk = ab.filledScript && ab.filledScript.errors.length === 0 ? ab.filledScript : undefined;
   const exitName = linkedScript ? extractExitDirectiveValue(linkedScript.rawText) : undefined;
-  const generatorInputCard = ab.filledScript && linkedScript && exitName !== undefined
+  const generatorInputCard = filledOk && linkedScript && exitName !== undefined
     ? generatorInputSectionHtml(exitName, resolveExitCompanionForScript(linkedScript, p.scripts, p.scriptPacks, nowIso))
     : '';
 
+  // "Open E-Sh4rk generator" — always available once a script is linked,
+  // whether or not it needs an exit companion (see Task 3 in this branch's
+  // spec / docs/attribution.md).
+  const externalGeneratorCard = linkedScript ? externalGeneratorLinkHtml() : '';
+
   return `<h1>Run Script</h1>
     ${workspaceStatusStripHtml(p)}
-    <p class="muted">Choose a supported action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
+    ${introLine}
+    <h2>Step 1 of 3 <span class="pill">Choose action</span></h2>
     ${targetCard}
     <div class="card">
       <label for="ab-revision">Revision label</label>
@@ -1390,11 +1427,16 @@ function renderActions(): string {
       ${actionSelectorHtml}
       ${variantPickerHtml}
       ${statusLine}
+    </div>
+    <h2>Step 2 of 3 <span class="pill">Fill parameters</span></h2>
+    <div class="card">
       <p class="muted">${escapeHtml(curated.description)}</p>
       ${fieldsHtml}
     </div>
+    <h2>Step 3 of 3 <span class="pill">Generate externally, then paste output back</span></h2>
     ${filledScriptCard}
     ${generatorInputCard}
+    ${externalGeneratorCard}
     ${pasteBackCard(p, ab, template.label)}
     ${reviewCaseSectionHtml(curated)}`;
 }
@@ -2956,7 +2998,7 @@ async function handleClick(e: Event): Promise<void> {
       if (!ab.filledScript || ab.filledScript.errors.length > 0) break;
       const ok = await copyText(ab.filledScript.filledScriptText);
       const orig = el.textContent;
-      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      el.textContent = ok ? 'Copied filled script ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }
@@ -2983,7 +3025,7 @@ async function handleClick(e: Event): Promise<void> {
       if (resolution.status !== 'resolved' || resolution.companionRawText === undefined) break;
       const ok = await copyText(resolution.companionRawText);
       const orig = el.textContent;
-      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      el.textContent = ok ? 'Copied exit companion ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }
@@ -2995,6 +3037,12 @@ async function handleClick(e: Event): Promise<void> {
       if (!curated) break;
       const linkedScript = curated.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
       const exitResolution = linkedScript ? resolveExitCompanionForScript(linkedScript, p.scripts, p.scriptPacks, nowIso) : undefined;
+      // Disabled in the UI (generatorInputSectionHtml) whenever there's an
+      // exit directive but no resolved companion — mirrored here so the
+      // handler can't be triggered some other way (e.g. re-enabling the
+      // disabled attribute via devtools) and silently ship an incomplete
+      // "full" bundle. An action with no exit directive at all is unaffected.
+      if (exitResolution?.status === 'missing') break;
       const bundle = buildGeneratorInputBundle({
         generatedAt: nowIso(),
         actionKey: curated.actionKey,
@@ -3008,7 +3056,7 @@ async function handleClick(e: Event): Promise<void> {
       });
       const ok = await copyText(formatGeneratorInputBundleText(bundle));
       const orig = el.textContent;
-      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      el.textContent = ok ? 'Copied generator input bundle ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }
@@ -3077,7 +3125,7 @@ async function handleClick(e: Event): Promise<void> {
       if (!ab.pasteBack.parsed) break;
       const ok = await copyText(formatCompactBoxNames(ab.pasteBack.parsed.rows));
       const orig = el.textContent;
-      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      el.textContent = ok ? 'Copied box names ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }
@@ -3086,7 +3134,7 @@ async function handleClick(e: Event): Promise<void> {
       if (!ab.pasteBack.parsed) break;
       const ok = await copyText(formatRawBoxLines(ab.pasteBack.parsed.rows));
       const orig = el.textContent;
-      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      el.textContent = ok ? 'Copied box names ✓' : 'Copy failed';
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }

@@ -14,6 +14,7 @@ import {
   type SupportedActionVariantStatus,
 } from './supportedActionRegistry.js';
 import { summarizeVariantVerification, describeGeneratorInputReadiness, type ActionVariantVerificationStatus, type GeneratorInputReadiness } from './schemaVerification.js';
+import { isExitCompanionScript } from './exitCompanion.js';
 
 export type CatalogNeedConfidence = 'high' | 'medium' | 'low';
 
@@ -531,8 +532,11 @@ export function groupCatalogAuditBySupportedAction(project: Project, audit: Cata
   // broader than getUnsupportedScripts' "zero candidates" bucket, since a
   // scanned-but-not-yet-curated script still belongs here (it has no action
   // either way), and its own candidates' catalog needs are worth surfacing.
+  // Exit-code companion files (e.g. exit.txt) are excluded — they're support
+  // material for the manual generator workflow, never an action-script gap.
   const unsupportedScripts: UnsupportedScriptCatalogAudit[] = project.scripts
     .filter((s) => !project.curatedSchemas.some((cs) => cs.scriptId === s.id))
+    .filter((s) => !isExitCompanionScript(s))
     .map((s) => ({
       scriptId: s.id,
       scriptFilename: s.filename,

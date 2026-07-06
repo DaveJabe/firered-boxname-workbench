@@ -11,6 +11,7 @@
 import type { CuratedActionSchema, EsharkCategory, GameTarget, ScriptFile, ScriptPack, VariableCandidate } from './types.js';
 import { UNKNOWN_TARGET } from './gameTarget.js';
 import { detachCuratedSchema } from './curatedSchemas.js';
+import { isExitCompanionScript } from './exitCompanion.js';
 
 // --- Collecting a folder selection into scripts + optional metadata --------
 
@@ -167,6 +168,8 @@ export interface ScriptPackRow {
   hasSchema: boolean;
   target: GameTarget;
   category?: EsharkCategory;
+  /** True for an exit-code companion file (e.g. exit.txt) — support material for the manual generator workflow, never an action script. See core/exitCompanion.ts. */
+  isCompanionFile: boolean;
 }
 
 /** One summary row per script, for the Manage Scripts table — never scans or fills anything itself. */
@@ -186,6 +189,7 @@ export function buildScriptPackRows(
       internalCandidateCount: candidates.filter((c) => c.internal).length,
       hasSchema: curatedSchemas.some((cs) => cs.scriptId === s.id),
       target: effectiveScriptTarget(s, s.packId ? packsById.get(s.packId) : undefined),
+      isCompanionFile: isExitCompanionScript(s),
     };
     if (s.relativePath) row.relativePath = s.relativePath;
     if (s.lastScan?.title) row.title = s.lastScan.title;

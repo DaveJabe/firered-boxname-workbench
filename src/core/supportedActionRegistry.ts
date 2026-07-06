@@ -11,6 +11,7 @@
 import type { CuratedActionSchema, EsharkCategory, GameTarget, Project, ScriptFile } from './types.js';
 import { checkTargetCompatibility, isUnknownTarget } from './gameTarget.js';
 import { summarizeSupportedScripts } from './supportedScripts.js';
+import { isExitCompanionScript } from './exitCompanion.js';
 
 export type SupportedActionVariantStatus =
   | 'ready'
@@ -68,10 +69,19 @@ export function groupSchemasByActionKey(project: Project): Map<string, CuratedAc
  * structural rules (core/curatedSchemas.ts), independent of any specific
  * selected target — target compatibility is checked separately by callers
  * that have a target to compare against (e.g. getRunnableActionsForTarget).
+ *
+ * Defense in depth: a schema linked to a script that looks like an
+ * exit-code companion file (core/exitCompanion.ts, e.g. exit.txt) is
+ * treated the same as a missing script — such a schema shouldn't normally
+ * exist (reviewed-preset matching and the manual schema-review flow both
+ * guard against it too), but this is the one place that guarantees a
+ * companion file can never become a runnable Run Script action regardless
+ * of how a schema ended up pointing at it.
  */
 function buildVariantStatus(schema: CuratedActionSchema, project: Project): SupportedActionVariantStatus {
   if (schema.status === 'disabled') return 'disabled';
-  if (!schema.scriptId || !project.scripts.some((s) => s.id === schema.scriptId)) return 'missing-script';
+  const script = schema.scriptId ? project.scripts.find((s) => s.id === schema.scriptId) : undefined;
+  if (!script || isExitCompanionScript(script)) return 'missing-script';
   if (schema.status === 'draft') return 'needs-review';
   if (isUnknownTarget(schema.target)) return 'incompatible-target';
   if (schema.fields.length === 0) return 'needs-review'; // reviewed and linked, but nothing to fill in yet

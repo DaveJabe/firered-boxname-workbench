@@ -72,6 +72,18 @@ export function findExitCompanionCandidates(scripts: readonly ScriptFile[]): Scr
   return scripts.filter((s) => looksLikeExitCompanionFile(s.filename, s.rawText));
 }
 
+/**
+ * Convenience wrapper around looksLikeExitCompanionFile for an existing
+ * ScriptFile — the single check every "treat this as a support file, not an
+ * action script" guard in the codebase should call, so the definition of
+ * "looks like a companion" never drifts between call sites (Setup's script
+ * buckets, reviewed-preset matching, the supported-action registry, Catalog
+ * Audit's unsupported-scripts list).
+ */
+export function isExitCompanionScript(script: ScriptFile): boolean {
+  return looksLikeExitCompanionFile(script.filename, script.rawText);
+}
+
 function buildResolvedResolution(
   exitName: string,
   companion: ScriptFile,

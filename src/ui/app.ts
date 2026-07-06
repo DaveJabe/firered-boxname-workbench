@@ -146,7 +146,7 @@ import {
   type ProjectSummary,
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
-import { resolveExitCompanionForScript } from '../core/exitCompanion.js';
+import { resolveExitCompanionForScript, isExitCompanionScript } from '../core/exitCompanion.js';
 import { buildGeneratorInputBundle, formatGeneratorInputBundleText } from '../core/generatorInputBundle.js';
 // EXPERIMENTAL, DEV-ONLY. Only ever called from the "Local generator POC"
 // panel below (gated by the fbw.enableLocalGeneratorPoc localStorage flag),
@@ -1698,6 +1698,9 @@ function renderScanResult(script: ScriptFile, scan: ScriptScanResult, project: P
  * its own labeled button rather than picking one automatically.
  */
 function reviewedPresetSuggestionHtml(s: ScriptFile, project: Project): string {
+  // Exit-code companion files (e.g. exit.txt) are support material, never a
+  // reviewed-preset candidate — see core/exitCompanion.ts.
+  if (isExitCompanionScript(s)) return '';
   const matches = matchReviewedPresets(REVIEWED_SCHEMA_PRESETS, {
     filename: s.filename,
     title: s.lastScan?.title,
@@ -1748,6 +1751,7 @@ function renderScriptCard(s: ScriptFile, project: Project): string {
         <span class="muted">${lineCount} line${lineCount === 1 ? '' : 's'}${s.relativePath ? ' · ' + escapeHtml(s.relativePath) : ''} · imported ${escapeHtml(s.importedAt)}</span>
         <span class="pill">${escapeHtml(targetLabel(effectiveTarget))}</span>
         ${s.category ? `<span class="pill">${escapeHtml(s.category)}</span>` : ''}
+        ${isExitCompanionScript(s) ? '<span class="pill" title="Support material for the manual generator workflow — never an action script. See docs/local-generator-poc.md.">Support/companion file</span>' : ''}
       </div>
       <div class="row">
         <button class="btn small" data-action="run-scan" data-id="${attr(s.id)}">Run scanner</button>
@@ -1825,7 +1829,7 @@ function scriptSummaryTable(rows: ScriptPackRow[]): string {
   const trs = rows
     .map(
       (r) => `<tr>
-        <td>${escapeHtml(r.filename)}</td>
+        <td>${escapeHtml(r.filename)}${r.isCompanionFile ? ' <span class="pill" title="Support material for the manual generator workflow — never an action script.">Support/companion file</span>' : ''}</td>
         <td>${r.relativePath ? escapeHtml(r.relativePath) : '—'}</td>
         <td>${r.title ? escapeHtml(r.title) : '—'}</td>
         <td>${escapeHtml(targetLabel(r.target))}</td>
@@ -1852,6 +1856,9 @@ function workspaceStatusStripHtml(project: Project): string {
 
 /** The single reviewed preset that unambiguously matches this script and isn't already applied to it, if exactly one does. */
 function unambiguousPresetMatch(script: ScriptFile, project: Project): ReviewedSchemaPreset | undefined {
+  // Exit-code companion files (e.g. exit.txt) are support material, never a
+  // reviewed-preset candidate — see core/exitCompanion.ts.
+  if (isExitCompanionScript(script)) return undefined;
   const matches = matchReviewedPresets(REVIEWED_SCHEMA_PRESETS, {
     filename: script.filename,
     title: script.lastScan?.title,
@@ -1943,6 +1950,7 @@ function compactCatalogHtml(project: Project): string {
   // distinguishes Ready actions / Needs review / Unsupported, plus Advanced for everything else.
   const needsReview = rows.filter((r) => (r.bucket === 'needs-review' || r.bucket === 'disabled-or-incompatible') && !scriptIdsInReadyActions.has(r.scriptId));
   const unsupported = rows.filter((r) => r.bucket === 'no-candidates');
+  const supportFiles = rows.filter((r) => r.bucket === 'support-file');
 
   const hasUnambiguousPresetSomewhere = [...needsReview, ...unsupported].some(
     (r) => !!project.scripts.find((s) => s.id === r.scriptId) && unambiguousPresetMatch(project.scripts.find((s) => s.id === r.scriptId)!, project),
@@ -1955,6 +1963,7 @@ function compactCatalogHtml(project: Project): string {
       <span class="chip">Ready actions: ${readyActions.length}</span>
       <span class="chip">Needs review: ${needsReview.length}</span>
       <span class="chip">Unsupported: ${unsupported.length}</span>
+      ${supportFiles.length > 0 ? `<span class="chip" title="Exit-code companion files (e.g. exit.txt) — support material, not action scripts.">Support/companion files: ${supportFiles.length}</span>` : ''}
     </div>
     ${hasUnambiguousPresetSomewhere ? `<div class="row" style="margin:0.5rem 0"><button class="btn" data-action="apply-all-unambiguous-presets">Apply all unambiguous reviewed presets</button></div>` : ''}
     <h4>Ready actions</h4>

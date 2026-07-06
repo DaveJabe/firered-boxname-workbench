@@ -8,8 +8,9 @@
 import type { CuratedActionSchema, CuratedSchemaStatus, EsharkCategory, GameTarget, ScriptFile, ScriptPack } from './types.js';
 import { isUnknownTarget, UNKNOWN_TARGET } from './gameTarget.js';
 import { buildScriptPackRows } from './scriptPack.js';
+import { isExitCompanionScript } from './exitCompanion.js';
 
-export type ScriptSupportBucket = 'ready' | 'needs-review' | 'no-candidates' | 'disabled-or-incompatible';
+export type ScriptSupportBucket = 'ready' | 'needs-review' | 'no-candidates' | 'disabled-or-incompatible' | 'support-file';
 
 export interface ScriptSupportInfo {
   bucket: ScriptSupportBucket;
@@ -21,6 +22,11 @@ export interface ScriptSupportInfo {
  * Classify one script, independent of whatever target happens to be
  * selected in Run Script right now — "ready" means genuinely usable, not
  * "usable if you also pick the right target over there." Priority order:
+ *   0. support-file — the script looks like an exit-code companion file
+ *      (see core/exitCompanion.ts), e.g. exit.txt. These are support
+ *      material for the manual generator workflow, never an action script
+ *      in their own right — this check wins even over an attached schema,
+ *      so one can never accidentally make a companion file "ready."
  *   1. ready — an attached schema is reviewed with an explicit (non-Unknown)
  *      target. A well-formed reviewed schema always has one; this also
  *      naturally excludes reviewed schemas that predate the target model.
@@ -36,6 +42,8 @@ export function computeScriptSupportInfo(
   script: ScriptFile,
   curatedSchemas: readonly CuratedActionSchema[],
 ): ScriptSupportInfo {
+  if (isExitCompanionScript(script)) return { bucket: 'support-file' };
+
   const attached = curatedSchemas.filter((s) => s.scriptId === script.id);
 
   const ready = attached.find((s) => s.status === 'reviewed' && !isUnknownTarget(s.target));
@@ -57,6 +65,8 @@ export interface SupportedScriptsSummary {
   needsReview: ScriptFile[];
   noCandidates: ScriptFile[];
   disabledOrIncompatible: ScriptFile[];
+  /** Exit-code companion files (e.g. exit.txt) — support material, never an unsupported/needs-review action script. See core/exitCompanion.ts. */
+  supportFiles: ScriptFile[];
 }
 
 /** Bucket every script in one pass, for the Manage Scripts "Supported scripts" view. */
@@ -64,7 +74,7 @@ export function summarizeSupportedScripts(
   scripts: readonly ScriptFile[],
   curatedSchemas: readonly CuratedActionSchema[],
 ): SupportedScriptsSummary {
-  const summary: SupportedScriptsSummary = { ready: [], needsReview: [], noCandidates: [], disabledOrIncompatible: [] };
+  const summary: SupportedScriptsSummary = { ready: [], needsReview: [], noCandidates: [], disabledOrIncompatible: [], supportFiles: [] };
   for (const script of scripts) {
     const info = computeScriptSupportInfo(script, curatedSchemas);
     switch (info.bucket) {
@@ -79,6 +89,9 @@ export function summarizeSupportedScripts(
         break;
       case 'disabled-or-incompatible':
         summary.disabledOrIncompatible.push(script);
+        break;
+      case 'support-file':
+        summary.supportFiles.push(script);
         break;
     }
   }

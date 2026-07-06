@@ -22,6 +22,7 @@ import type {
   EsharkSourceProfile,
   ReferenceCatalogId,
   SchemaReviewCase,
+  ExitCompanionResolution,
 } from '../core/types.js';
 import { createProject } from '../core/factory.js';
 import { buildValidationResult, countBySeverity } from '../core/validators.js';
@@ -33,7 +34,7 @@ import { renderReportHtml } from '../report/report.js';
 import { TEMPLATES } from '../templates/checklist-templates.js';
 import type { ActionField, ActionTemplate } from '../templates/action-templates.js';
 import { defaultActionValues, coerceActionFieldValue } from '../core/actionInput.js';
-import { scanScript, buildDraftActionSchema } from '../core/scriptScanner.js';
+import { scanScript, buildDraftActionSchema, extractExitDirectiveValue } from '../core/scriptScanner.js';
 import {
   toActionTemplateShape,
   isSchemaSelectable,
@@ -62,6 +63,7 @@ import {
   runAllSchemaReviewCases,
   type ActionVariantVerificationStatus,
   type SchemaReviewCaseBatchResult,
+  type GeneratorInputReadiness,
 } from '../core/schemaVerification.js';
 import {
   computeSchemaShapeSignature,
@@ -144,6 +146,8 @@ import {
   type ProjectSummary,
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
+import { resolveExitCompanionForScript } from '../core/exitCompanion.js';
+import { buildGeneratorInputBundle, formatGeneratorInputBundleText } from '../core/generatorInputBundle.js';
 // EXPERIMENTAL, DEV-ONLY. Only ever called from the "Local generator POC"
 // panel below (gated by the fbw.enableLocalGeneratorPoc localStorage flag),
 // only on an explicit button click. See docs/local-generator-poc.md.
@@ -899,6 +903,12 @@ function renderAdvanced(): string {
         <p class="muted">A quick overview, plus a step-by-step reference for walking one script through the whole workflow by hand.</p>
         <button class="btn" data-action="nav" data-screen="start-here">Go to Orientation</button>
       </div>
+      <div class="card">
+        <h3>About &amp; attribution</h3>
+        <p class="muted">This app is an independent helper UI for working with public E-Sh4rk/EmeraldACE scripts — not affiliated with, endorsed by, or maintained by E-Sh4rk. E-Sh4rk's scripts and <a href="https://github.com/E-Sh4rk/CodeGenerator" target="_blank" rel="noopener noreferrer">CodeGenerator</a> remain the source of truth. Manual paste-back is the supported way to bring real generator output in.</p>
+        <p class="muted">Sources: <a href="https://github.com/E-Sh4rk/EmeraldACE_web" target="_blank" rel="noopener noreferrer">E-Sh4rk/EmeraldACE_web</a> &middot; <a href="https://github.com/E-Sh4rk/CodeGenerator" target="_blank" rel="noopener noreferrer">E-Sh4rk/CodeGenerator</a></p>
+        <p class="muted">See <code>docs/attribution.md</code> for the full statement.</p>
+      </div>
     </div>
     ${isLocalGeneratorPocEnabled() ? renderLocalGeneratorPocPanel() : ''}`;
 }
@@ -911,8 +921,23 @@ function renderAdvanced(): string {
  * ActionBuilderState.filledScript — rather than a separate field-fill UI.
  */
 function renderLocalGeneratorPocPanel(): string {
+  const p = state.project;
   const ab = state.actionBuilder;
   const poc = state.localGeneratorPocPanel;
+
+  // If the currently selected action's script resolves a companion, offer
+  // to use it — the manual paste path (below) stays fully intact either
+  // way; this is a convenience, never automatic, never required.
+  const curatedForPoc = p?.curatedSchemas.find((s) => s.id === ab.curatedSchemaId);
+  const linkedScriptForPoc = curatedForPoc?.scriptId ? p?.scripts.find((s) => s.id === curatedForPoc.scriptId) : undefined;
+  const resolvedCompanion = p && linkedScriptForPoc
+    ? resolveExitCompanionForScript(linkedScriptForPoc, p.scripts, p.scriptPacks, nowIso)
+    : undefined;
+  const useResolvedCompanionHtml = resolvedCompanion?.status === 'resolved'
+    ? `<div class="row" style="margin-bottom:0.5rem">
+        <button class="btn" data-action="use-resolved-exit-companion">Use resolved companion (${escapeHtml(resolvedCompanion.companionFilename ?? 'found')})</button>
+      </div>`
+    : '';
 
   const artifactStatusHtml =
     poc.artifactStatus === 'checking'
@@ -943,7 +968,8 @@ function renderLocalGeneratorPocPanel(): string {
     </div>
     ${artifactStatusHtml}
     ${fillCard}
-    <label for="poc-exit-companion">Exit companion text (paste the full upstream <code>files_frlg/exit.txt</code> contents)</label>
+    <label for="poc-exit-companion">Exit companion text (paste the full upstream <code>files_frlg/exit.txt</code> contents, or use a resolved companion below if available)</label>
+    ${useResolvedCompanionHtml}
     <textarea id="poc-exit-companion" data-bind="localGeneratorPoc.exitCompanionText" rows="6" placeholder="Required for scripts declaring @@ exit = &quot;...&quot; — see docs/local-generator-poc.md">${escapeHtml(poc.exitCompanionText)}</textarea>
     <div class="row">
       <button class="btn primary" data-action="run-local-generator-poc"${!hasFilledScript || poc.running ? ' disabled' : ''}>${poc.running ? 'Running…' : 'Run local generator POC'}</button>
@@ -1101,6 +1127,30 @@ function filledScriptSection(result: FilledScriptResult): string {
       <button class="btn" data-action="copy-filled-script">Copy filled script</button>
       <button class="btn" data-action="save-filled-script">Save filled script as block</button>
     </div>`;
+}
+
+/**
+ * Compact "Generator input" section — shown only when the linked script has
+ * an @@ exit directive (see core/exitCompanion.ts). Deliberately minimal:
+ * copy buttons and a resolved/missing status line, never a second copy of
+ * the main action form. Manual instruction only — this app never invokes a
+ * generator; see docs/attribution.md.
+ */
+function generatorInputSectionHtml(exitName: string, resolution: ExitCompanionResolution): string {
+  const statusHtml = resolution.status === 'resolved'
+    ? `<span class="badge info">resolved${resolution.companionFilename ? ` — from ${escapeHtml(resolution.companionFilename)}` : ''}</span>`
+    : `<span class="badge warning">companion not found</span>`;
+  return `<div class="card" style="border-color:#9fd3b4;background:#f3fbf6">
+    <h3>Generator input <span class="pill">manual — no generator invoked</span></h3>
+    <p class="muted">Exit: <code>${escapeHtml(exitName)}</code> — ${statusHtml}</p>
+    <div class="row">
+      <button class="btn" data-action="copy-filled-script">Copy filled script</button>
+      <button class="btn" data-action="copy-exit-name">Copy exit name</button>
+      <button class="btn" data-action="copy-exit-companion-text"${resolution.status !== 'resolved' ? ' disabled' : ''}>Copy companion text</button>
+      <button class="btn" data-action="copy-generator-input-bundle">Copy generator input bundle</button>
+    </div>
+    <p class="muted">Use the filled script and matching exit code together in your own external E-Sh4rk generator (the source of truth for its output), then paste the result back below.</p>
+  </div>`;
 }
 
 function parsedBoxNameSheet(parsed: ParsedGeneratorOutput): string {
@@ -1322,6 +1372,14 @@ function renderActions(): string {
       </div>`
     : '';
 
+  // Compact "Generator input" section — only once a script is both linked,
+  // filled, and declares an @@ exit directive; nothing extra otherwise. See
+  // core/exitCompanion.ts and docs/local-generator-poc.md.
+  const exitName = linkedScript ? extractExitDirectiveValue(linkedScript.rawText) : undefined;
+  const generatorInputCard = ab.filledScript && linkedScript && exitName !== undefined
+    ? generatorInputSectionHtml(exitName, resolveExitCompanionForScript(linkedScript, p.scripts, p.scriptPacks, nowIso))
+    : '';
+
   return `<h1>Run Script</h1>
     ${workspaceStatusStripHtml(p)}
     <p class="muted">Choose a supported action, fill in its fields, and prepare a filled script or box-name sheet for your own external generator to run.</p>
@@ -1336,6 +1394,7 @@ function renderActions(): string {
       ${fieldsHtml}
     </div>
     ${filledScriptCard}
+    ${generatorInputCard}
     ${pasteBackCard(p, ab, template.label)}
     ${reviewCaseSectionHtml(curated)}`;
 }
@@ -1933,7 +1992,14 @@ function variantStaleFieldRepairsHtml(schemaId: string, repairs: readonly StaleF
 }
 
 const ACTION_VARIANT_AUDIT_TABLE_HEAD =
-  '<thead><tr><th>Action</th><th>Target</th><th>Script</th><th>Schema id</th><th>Status</th><th>Catalog needs</th><th>Stale field repairs</th><th>Verification</th></tr></thead>';
+  '<thead><tr><th>Action</th><th>Target</th><th>Script</th><th>Schema id</th><th>Status</th><th>Catalog needs</th><th>Stale field repairs</th><th>Verification</th><th>Generator input</th></tr></thead>';
+
+/** "Generator input" column — separate from filled-script verification (see schemaVerification.ts's describeGeneratorInputReadiness): whether this variant's exit-code companion (if it needs one at all) was found. */
+function generatorInputReadinessBadgeHtml(readiness: GeneratorInputReadiness): string {
+  if (readiness === 'not-applicable') return '<span class="muted">—</span>';
+  if (readiness === 'ready') return '<span class="badge info">exit companion resolved</span>';
+  return '<span class="badge warning">missing exit companion</span>';
+}
 
 /** One row for a supported-action variant's catalog audit — used both grouped (Ready supported actions) and flat (variants with gaps). */
 function actionVariantAuditRowHtml(v: ActionVariantCatalogAudit): string {
@@ -1947,6 +2013,7 @@ function actionVariantAuditRowHtml(v: ActionVariantCatalogAudit): string {
     <td>${catalogNeedsSummaryHtml(v.catalogNeeds)}</td>
     <td>${variantStaleFieldRepairsHtml(v.schemaId, v.staleFieldRepairs)}</td>
     <td><span class="muted">${escapeHtml(v.verificationStatus)}</span></td>
+    <td>${generatorInputReadinessBadgeHtml(v.generatorInputReadiness)}</td>
   </tr>`;
 }
 
@@ -1961,7 +2028,7 @@ function actionVariantAuditRowHtml(v: ActionVariantCatalogAudit): string {
  */
 function catalogAuditPanelHtml(project: Project): string {
   const audit = buildCatalogGapAudit(project, nowIso);
-  const grouped = groupCatalogAuditBySupportedAction(project, audit);
+  const grouped = groupCatalogAuditBySupportedAction(project, audit, nowIso);
   const ignored = state.catalogAuditIgnored;
 
   const readyActionsHtml = grouped.readyActions
@@ -2005,6 +2072,8 @@ function catalogAuditPanelHtml(project: Project): string {
     })
     .join('');
 
+  const blockedByExitCompanionRows = grouped.actionsBlockedByMissingExitCompanion.map(actionVariantAuditRowHtml).join('');
+
   return `<details id="catalog-audit-details"${state.catalogAuditOpen ? ' open' : ''}>
     <summary class="muted" style="cursor:pointer">Catalog Audit <span class="pill">Setup/Advanced only</span></summary>
     <div class="card">
@@ -2015,6 +2084,12 @@ function catalogAuditPanelHtml(project: Project): string {
 
       <h4>Ready supported actions</h4>
       ${readyActionsHtml || '<p class="muted">No supported actions are ready yet.</p>'}
+
+      <h4>Actions blocked by missing exit companion</h4>
+      <p class="muted">These variants' scripts declare an <code>@@ exit = "..."</code> directive whose companion text hasn't been found among imported scripts yet — see docs/local-generator-poc.md and Run Script's "Generator input" section. A fillable/"ready" variant can still appear here: filling and this are separate concerns.</p>
+      ${blockedByExitCompanionRows
+        ? `<table>${ACTION_VARIANT_AUDIT_TABLE_HEAD}<tbody>${blockedByExitCompanionRows}</tbody></table>`
+        : '<p class="muted">No variant is currently blocked by a missing exit companion.</p>'}
 
       <h4>Action variants with missing catalog coverage</h4>
       ${variantsWithGapsRows
@@ -2147,13 +2222,33 @@ function variantVerificationPanelHtml(project: Project): string {
 function batchVerificationResultHtml(batch: SchemaReviewCaseBatchResult | null): string {
   if (!batch) return '';
   const s = batch.summary;
+  const missingCompanionCount = batch.results.filter((r) => r.generatorInputReadiness === 'missing-exit-companion').length;
   const summaryHtml = `<p class="muted">
     Total: ${s.total} · Passing: ${s.passing} · Failing: ${s.failing} · Not available: ${s.notAvailable} · Accepted manually: ${s.accepted} · Draft: ${s.draft}
+    ${missingCompanionCount > 0 ? ` · <span class="badge warning">Generator input readiness: incomplete (${missingCompanionCount} missing exit companion)</span>` : ''}
   </p>`;
+
+  const missingCompanionRows = batch.results
+    .filter((r) => r.generatorInputReadiness === 'missing-exit-companion')
+    .map(
+      (r) => `<tr>
+        <td>${r.actionLabel ? escapeHtml(r.actionLabel) : '<span class="muted">—</span>'}</td>
+        <td>${r.target ? escapeHtml(targetLabel(r.target)) : '—'}</td>
+        <td>${r.scriptFilename ? escapeHtml(r.scriptFilename) : '—'}</td>
+        <td><span class="muted">filled-script verification: ${escapeHtml(r.status)}</span> · <span class="badge warning">generator input readiness: incomplete, missing exit companion</span></td>
+        <td>${r.scriptId ? `<button class="btn small" data-action="open-script" data-id="${attr(r.scriptId)}">Open script review</button>` : ''}</td>
+      </tr>`,
+    )
+    .join('');
+  const missingCompanionHtml = missingCompanionRows
+    ? `<h4>Generator input readiness: incomplete</h4>
+       <p class="muted">These cases' filled-script verification status is unaffected — this is a separate readiness signal for the manual generator step. See docs/local-generator-poc.md.</p>
+       <table><thead><tr><th>Action</th><th>Target</th><th>Script</th><th>Readiness</th><th></th></tr></thead><tbody>${missingCompanionRows}</tbody></table>`
+    : '';
 
   const failures = batch.results.filter((r) => r.status === 'failing');
   if (failures.length === 0) {
-    return `<div class="card">${summaryHtml}<p class="muted">No failing cases.</p></div>`;
+    return `<div class="card">${summaryHtml}<p class="muted">No failing cases.</p>${missingCompanionHtml}</div>`;
   }
 
   const failureRows = failures
@@ -2176,6 +2271,7 @@ function batchVerificationResultHtml(batch: SchemaReviewCaseBatchResult | null):
     ${summaryHtml}
     <h4>Failing cases</h4>
     <table><thead><tr><th>Action</th><th>Target</th><th>Schema id</th><th>Script</th><th>Errors</th><th></th></tr></thead><tbody>${failureRows}</tbody></table>
+    ${missingCompanionHtml}
   </div>`;
 }
 
@@ -2855,6 +2951,58 @@ async function handleClick(e: Event): Promise<void> {
       window.setTimeout(() => { el.textContent = orig; }, 1200);
       break;
     }
+    case 'copy-exit-name': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const curated = p.curatedSchemas.find((s) => s.id === ab.curatedSchemaId);
+      const linkedScript = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+      const exitName = linkedScript ? extractExitDirectiveValue(linkedScript.rawText) : undefined;
+      if (!exitName) break;
+      const ok = await copyText(exitName);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'copy-exit-companion-text': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const curated = p.curatedSchemas.find((s) => s.id === ab.curatedSchemaId);
+      const linkedScript = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+      if (!linkedScript) break;
+      const resolution = resolveExitCompanionForScript(linkedScript, p.scripts, p.scriptPacks, nowIso);
+      if (resolution.status !== 'resolved' || resolution.companionRawText === undefined) break;
+      const ok = await copyText(resolution.companionRawText);
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
+    case 'copy-generator-input-bundle': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      if (!ab.filledScript || ab.filledScript.errors.length > 0) break;
+      const curated = p.curatedSchemas.find((s) => s.id === ab.curatedSchemaId);
+      if (!curated) break;
+      const linkedScript = curated.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+      const exitResolution = linkedScript ? resolveExitCompanionForScript(linkedScript, p.scripts, p.scriptPacks, nowIso) : undefined;
+      const bundle = buildGeneratorInputBundle({
+        generatedAt: nowIso(),
+        actionKey: curated.actionKey,
+        schemaId: curated.id,
+        schemaLabel: curated.label,
+        scriptId: linkedScript?.id,
+        scriptFilename: linkedScript?.filename,
+        target: curated.target,
+        filledScriptText: ab.filledScript.filledScriptText,
+        exitResolution,
+      });
+      const ok = await copyText(formatGeneratorInputBundleText(bundle));
+      const orig = el.textContent;
+      el.textContent = ok ? 'Copied ✓' : 'Copy failed';
+      window.setTimeout(() => { el.textContent = orig; }, 1200);
+      break;
+    }
     case 'save-filled-script': {
       if (!p) break;
       const ab = state.actionBuilder;
@@ -3218,7 +3366,7 @@ async function handleClick(e: Event): Promise<void> {
     }
     case 'run-all-schema-verification': {
       if (!p) break;
-      const batch = runAllSchemaReviewCases(p);
+      const batch = runAllSchemaReviewCases(p, nowIso);
       // Persist only what was actually live-checked — 'accepted'/'draft' cases keep their own
       // stored status untouched, and 'not-available' has no corresponding SchemaReviewCaseStatus.
       for (const result of batch.results) {
@@ -3421,8 +3569,21 @@ async function handleClick(e: Event): Promise<void> {
     case 'export-json':
       if (p) downloadText(`${p.metadata.projectTitle || 'project'}.json`, exportProjectJson(p), 'application/json');
       break;
-    // EXPERIMENTAL, DEV-ONLY — see docs/local-generator-poc.md. Both cases
-    // only ever run from an explicit click on the gated panel in Advanced.
+    // EXPERIMENTAL, DEV-ONLY — see docs/local-generator-poc.md. Every case
+    // below only ever runs from an explicit click on the gated panel in
+    // Advanced; none of them run the generator itself.
+    case 'use-resolved-exit-companion': {
+      if (!p) break;
+      const ab = state.actionBuilder;
+      const curated = p.curatedSchemas.find((s) => s.id === ab.curatedSchemaId);
+      const linkedScript = curated?.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
+      if (!linkedScript) break;
+      const resolution = resolveExitCompanionForScript(linkedScript, p.scripts, p.scriptPacks, nowIso);
+      if (resolution.status !== 'resolved' || resolution.companionRawText === undefined) break;
+      state.localGeneratorPocPanel.exitCompanionText = resolution.companionRawText;
+      render();
+      break;
+    }
     case 'check-local-generator-artifact': {
       const poc = state.localGeneratorPocPanel;
       poc.artifactStatus = 'checking';

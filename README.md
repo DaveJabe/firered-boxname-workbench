@@ -63,6 +63,21 @@ See [docs/scope.md](./docs/scope.md) for the full scope statement.
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the boundaries every change must
 respect, and [docs/scope.md](./docs/scope.md) for the rationale behind them.
 
+## Attribution
+
+This project is an independent helper UI for working with public
+E-Sh4rk/EmeraldACE scripts. It is **not affiliated with, endorsed by, or
+maintained by E-Sh4rk**. E-Sh4rk's scripts and
+[CodeGenerator](https://github.com/E-Sh4rk/CodeGenerator) remain the source
+of truth — this app never bundles or redistributes E-Sh4rk's generator
+artifact unless upstream licensing or explicit permission is clarified.
+Manual paste-back of your own generator's output remains the supported way
+to bring real output into this app. See
+[docs/attribution.md](./docs/attribution.md) for the full disclaimer and
+links to upstream repositories, and
+[docs/local-generator-poc.md](./docs/local-generator-poc.md) for the one
+private, local-only, artifact-guarded exception.
+
 ## Local by construction
 
 - No hidden network calls, no auto-fetch on launch, no telemetry, no

@@ -13,7 +13,7 @@ import {
   type SupportedActionVariant,
   type SupportedActionVariantStatus,
 } from './supportedActionRegistry.js';
-import { summarizeVariantVerification, type ActionVariantVerificationStatus } from './schemaVerification.js';
+import { summarizeVariantVerification, describeGeneratorInputReadiness, type ActionVariantVerificationStatus, type GeneratorInputReadiness } from './schemaVerification.js';
 
 export type CatalogNeedConfidence = 'high' | 'medium' | 'low';
 
@@ -428,6 +428,8 @@ export interface ActionVariantCatalogAudit {
   staleFieldRepairs: readonly StaleFieldFinding[];
   /** This variant's live verification standing (core/schemaVerification.ts) — "not-available" whenever the schema can't be verified at all right now (detached/missing script/disabled/draft-only), not just when no review case exists. */
   verificationStatus: ActionVariantVerificationStatus;
+  /** Separate from verificationStatus — whether this variant's script has an @@ exit directive and, if so, whether its companion text was found. See schemaVerification.ts's describeGeneratorInputReadiness. */
+  generatorInputReadiness: GeneratorInputReadiness;
 }
 
 export interface ActionCatalogAuditGroup {
@@ -452,6 +454,8 @@ export interface SupportedActionCatalogAudit {
   unsupportedScripts: readonly UnsupportedScriptCatalogAudit[];
   /** "Unknown/manual-review fields" — unchanged from the flat audit. */
   unknownFields: readonly UnknownFieldNeed[];
+  /** Variants whose generatorInputReadiness is 'missing-exit-companion' — regardless of their own SupportedActionVariantStatus, since a variant can be otherwise "ready" (fillable in Run Script) while still blocked for the actual external generator step. */
+  actionsBlockedByMissingExitCompanion: readonly ActionVariantCatalogAudit[];
 }
 
 function buildVariantCatalogAudit(
@@ -459,6 +463,7 @@ function buildVariantCatalogAudit(
   variant: SupportedActionVariant,
   project: Project,
   audit: CatalogGapAudit,
+  nowIso: () => string,
 ): ActionVariantCatalogAudit {
   const schema = project.curatedSchemas.find((s) => s.id === variant.schemaId);
   // Only fields that STILL need catalog work — a field already correctly
@@ -479,6 +484,9 @@ function buildVariantCatalogAudit(
   const verificationStatus: ActionVariantVerificationStatus = schema
     ? summarizeVariantVerification(schema, project, project.schemaReviewCases).status
     : 'not-available';
+  const generatorInputReadiness: GeneratorInputReadiness = schema
+    ? describeGeneratorInputReadiness(schema, project, nowIso).status
+    : 'not-applicable';
 
   const result: ActionVariantCatalogAudit = {
     actionKey: action.actionKey,
@@ -490,6 +498,7 @@ function buildVariantCatalogAudit(
     catalogNeeds,
     staleFieldRepairs,
     verificationStatus,
+    generatorInputReadiness,
   };
   if (variant.scriptFilename) result.scriptFilename = variant.scriptFilename;
   if (variant.relativePath) result.scriptRelativePath = variant.relativePath;
@@ -503,7 +512,7 @@ function buildVariantCatalogAudit(
  * and stale-field repairs are the exact same findings the flat audit
  * already computed, just grouped differently.
  */
-export function groupCatalogAuditBySupportedAction(project: Project, audit: CatalogGapAudit): SupportedActionCatalogAudit {
+export function groupCatalogAuditBySupportedAction(project: Project, audit: CatalogGapAudit, nowIso: () => string): SupportedActionCatalogAudit {
   const registry = buildSupportedActionRegistry(project);
 
   const readyActions: ActionCatalogAuditGroup[] = registry
@@ -511,11 +520,12 @@ export function groupCatalogAuditBySupportedAction(project: Project, audit: Cata
     .map((action) => ({
       actionKey: action.actionKey,
       actionLabel: action.label,
-      variants: action.variants.map((v) => buildVariantCatalogAudit(action, v, project, audit)),
+      variants: action.variants.map((v) => buildVariantCatalogAudit(action, v, project, audit, nowIso)),
     }));
 
-  const allVariantAudits = registry.flatMap((action) => action.variants.map((v) => buildVariantCatalogAudit(action, v, project, audit)));
+  const allVariantAudits = registry.flatMap((action) => action.variants.map((v) => buildVariantCatalogAudit(action, v, project, audit, nowIso)));
   const variantsWithGaps = allVariantAudits.filter((v) => v.catalogNeeds.length > 0 || v.staleFieldRepairs.length > 0);
+  const actionsBlockedByMissingExitCompanion = allVariantAudits.filter((v) => v.generatorInputReadiness === 'missing-exit-companion');
 
   // "Unsupported" here means "no curated schema/variant attached at all yet" —
   // broader than getUnsupportedScripts' "zero candidates" bucket, since a
@@ -537,5 +547,6 @@ export function groupCatalogAuditBySupportedAction(project: Project, audit: Cata
     variantsWithGaps,
     unsupportedScripts,
     unknownFields: audit.unknownFields,
+    actionsBlockedByMissingExitCompanion,
   };
 }

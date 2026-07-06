@@ -144,6 +144,14 @@ import {
   type ProjectSummary,
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
+// EXPERIMENTAL, DEV-ONLY. Only ever called from the "Local generator POC"
+// panel below (gated by the fbw.enableLocalGeneratorPoc localStorage flag),
+// only on an explicit button click. See docs/local-generator-poc.md.
+import {
+  runLocalGeneratorPoc,
+  detectLocalGeneratorArtifact,
+  type LocalGeneratorPocResult,
+} from '../experimental/localEsharkGeneratorPoc.js';
 import {
   type Screen,
   SCREEN_LABEL,
@@ -160,6 +168,32 @@ interface PasteBackState {
   label: string;
   parsed: ParsedGeneratorOutput | null;
   savedBlockId: string | null;
+}
+
+/**
+ * EXPERIMENTAL, DEV-ONLY state for the "Local generator POC" panel — see
+ * docs/local-generator-poc.md. Never persisted to the project; reset on
+ * every fresh workspace load same as actionBuilder/pasteBack.
+ */
+interface LocalGeneratorPocPanelState {
+  /** Manual paste of the shared exit-codes companion text (Task 6 — see docs/local-generator-poc.md's "Exit companion" section). */
+  exitCompanionText: string;
+  artifactStatus: 'unknown' | 'checking' | 'detected' | 'missing';
+  running: boolean;
+  lastResult: LocalGeneratorPocResult | null;
+}
+
+function makeLocalGeneratorPocPanelState(): LocalGeneratorPocPanelState {
+  return { exitCompanionText: '', artifactStatus: 'unknown', running: false, lastResult: null };
+}
+
+/** Reads the dev-only opt-in flag directly from localStorage on every render — no cached state, nothing to get out of sync. */
+function isLocalGeneratorPocEnabled(): boolean {
+  try {
+    return window.localStorage.getItem('fbw.enableLocalGeneratorPoc') === 'true';
+  } catch {
+    return false;
+  }
 }
 
 interface ActionBuilderState {
@@ -577,6 +611,8 @@ const state: {
   pendingSourceProfile: SourceProfile;
   /** Manage Scripts: whether the explicit GitHub fetch is in flight (disables the button, shows progress). */
   esharkFetchInProgress: boolean;
+  /** EXPERIMENTAL, DEV-ONLY — see docs/local-generator-poc.md. */
+  localGeneratorPocPanel: LocalGeneratorPocPanelState;
 } = {
   screen: 'actions',
   summaries: [],
@@ -602,6 +638,7 @@ const state: {
   pendingPackTargetNotes: '',
   pendingSourceProfile: 'generic',
   esharkFetchInProgress: false,
+  localGeneratorPocPanel: makeLocalGeneratorPocPanelState(),
 };
 
 const uid = () => crypto.randomUUID();
@@ -862,7 +899,83 @@ function renderAdvanced(): string {
         <p class="muted">A quick overview, plus a step-by-step reference for walking one script through the whole workflow by hand.</p>
         <button class="btn" data-action="nav" data-screen="start-here">Go to Orientation</button>
       </div>
-    </div>`;
+    </div>
+    ${isLocalGeneratorPocEnabled() ? renderLocalGeneratorPocPanel() : ''}`;
+}
+
+/**
+ * EXPERIMENTAL, DEV-ONLY panel — see docs/local-generator-poc.md. Only
+ * rendered when isLocalGeneratorPocEnabled() is true (an explicit
+ * localStorage flag a developer sets from the browser console; there is no
+ * in-app toggle). Reuses Run Script's own filled-script output — see
+ * ActionBuilderState.filledScript — rather than a separate field-fill UI.
+ */
+function renderLocalGeneratorPocPanel(): string {
+  const ab = state.actionBuilder;
+  const poc = state.localGeneratorPocPanel;
+
+  const artifactStatusHtml =
+    poc.artifactStatus === 'checking'
+      ? '<p class="muted">Checking…</p>'
+      : poc.artifactStatus === 'detected'
+        ? '<p><span class="badge info">Detected</span> — local artifact loaded and exposed aceGen.build.</p>'
+        : poc.artifactStatus === 'missing'
+          ? '<p><span class="badge warning">Not found</span> — see docs/local-generator-poc.md for setup. Manual paste-back is unaffected.</p>'
+          : '<p class="muted">Not checked yet.</p>';
+
+  const hasFilledScript = !!ab.filledScript;
+  const fillCard = hasFilledScript
+    ? `<div class="card">
+        <h4>Filled script (from Run Script)</h4>
+        <p class="muted">Action: ${escapeHtml(ab.selectedActionKey || '(none)')} · schema: ${escapeHtml(ab.curatedSchemaId || '(none)')}</p>
+        <pre>${escapeHtml(ab.filledScript!.filledScriptText)}</pre>
+      </div>`
+    : `<div class="card" style="border-color:#e0a458;background:#fffaf2">
+        <p class="muted">No filled script yet. Go to Run Script, pick an action, fill its fields, and click "Preview filled script" first.</p>
+        <button class="btn" data-action="nav" data-screen="actions">Go to Run Script</button>
+      </div>`;
+
+  return `<div class="card" style="border-color:#c9a4e0;background:#f8f3fc">
+    <h3>Local generator POC <span class="pill">experimental &middot; dev-only &middot; local-only</span></h3>
+    <p class="muted">Calls a locally-obtained, untracked copy of E-Sh4rk's compiled generator artifact. Never committed, never fetched remotely, never wired into the normal Run Script flow. See <code>docs/local-generator-poc.md</code>.</p>
+    <div class="row">
+      <button class="btn" data-action="check-local-generator-artifact"${poc.artifactStatus === 'checking' ? ' disabled' : ''}>Check for local artifact</button>
+    </div>
+    ${artifactStatusHtml}
+    ${fillCard}
+    <label for="poc-exit-companion">Exit companion text (paste the full upstream <code>files_frlg/exit.txt</code> contents)</label>
+    <textarea id="poc-exit-companion" data-bind="localGeneratorPoc.exitCompanionText" rows="6" placeholder="Required for scripts declaring @@ exit = &quot;...&quot; — see docs/local-generator-poc.md">${escapeHtml(poc.exitCompanionText)}</textarea>
+    <div class="row">
+      <button class="btn primary" data-action="run-local-generator-poc"${!hasFilledScript || poc.running ? ' disabled' : ''}>${poc.running ? 'Running…' : 'Run local generator POC'}</button>
+    </div>
+    ${poc.lastResult ? renderLocalGeneratorPocResult(poc.lastResult) : ''}
+  </div>`;
+}
+
+function renderLocalGeneratorPocResult(result: LocalGeneratorPocResult): string {
+  const errorsHtml = result.errors.length
+    ? `<p><span class="badge error">Errors</span></p><ul>${result.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join('')}</ul>`
+    : '';
+  const warningsHtml = result.warnings.length
+    ? `<p><span class="badge warning">Warnings</span></p><ul>${result.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>`
+    : '';
+  const rawHtml = result.rawGeneratorOutput ? `<h4>Raw output</h4><pre>${escapeHtml(result.rawGeneratorOutput)}</pre>` : '';
+  const rowsHtml =
+    result.parsedBoxRows && result.parsedBoxRows.length > 0
+      ? `<h4>Parsed Box N rows</h4><table><thead><tr><th>Box</th><th>Display</th><th>Compact</th></tr></thead><tbody>${result.parsedBoxRows
+          .map(
+            (r) =>
+              `<tr><td>${r.boxNumber}</td><td>${escapeHtml(r.spacedDisplay)}</td><td>${r.compactText ? escapeHtml(r.compactText) : '—'}</td></tr>`,
+          )
+          .join('')}</tbody></table>`
+      : '';
+  return `<div class="card">
+    <h4>Result <span class="muted">(${escapeHtml(result.provenance.adapterKind)} &middot; ${escapeHtml(result.provenance.generatedAt)})</span></h4>
+    ${errorsHtml}
+    ${warningsHtml}
+    ${rawHtml}
+    ${rowsHtml}
+  </div>`;
 }
 
 function renderSettings(): string {
@@ -2553,6 +2666,7 @@ function resetViewState(project: Project): void {
   state.pendingPackTargetNotes = '';
   state.pendingSourceProfile = 'generic';
   state.esharkFetchInProgress = false;
+  state.localGeneratorPocPanel = makeLocalGeneratorPocPanelState();
 }
 
 /**
@@ -3307,6 +3421,36 @@ async function handleClick(e: Event): Promise<void> {
     case 'export-json':
       if (p) downloadText(`${p.metadata.projectTitle || 'project'}.json`, exportProjectJson(p), 'application/json');
       break;
+    // EXPERIMENTAL, DEV-ONLY — see docs/local-generator-poc.md. Both cases
+    // only ever run from an explicit click on the gated panel in Advanced.
+    case 'check-local-generator-artifact': {
+      const poc = state.localGeneratorPocPanel;
+      poc.artifactStatus = 'checking';
+      render();
+      const detected = await detectLocalGeneratorArtifact();
+      poc.artifactStatus = detected ? 'detected' : 'missing';
+      render();
+      break;
+    }
+    case 'run-local-generator-poc': {
+      const poc = state.localGeneratorPocPanel;
+      const ab = state.actionBuilder;
+      if (!ab.filledScript || poc.running) break;
+      poc.running = true;
+      render();
+      const curated = p?.curatedSchemas.find((s) => s.id === ab.curatedSchemaId);
+      poc.lastResult = await runLocalGeneratorPoc({
+        filledScriptText: ab.filledScript.filledScriptText,
+        exitCompanionText: poc.exitCompanionText,
+        target: ab.runTarget,
+        actionKey: ab.selectedActionKey || undefined,
+        schemaId: ab.curatedSchemaId,
+        scriptId: curated?.scriptId,
+      });
+      poc.running = false;
+      render();
+      break;
+    }
   }
 }
 
@@ -3396,6 +3540,11 @@ async function handleChange(e: Event): Promise<void> {
   }
   if (bind === 'pendingSourceProfile') {
     state.pendingSourceProfile = value as SourceProfile;
+    render();
+    return;
+  }
+  if (bind === 'localGeneratorPoc.exitCompanionText') {
+    state.localGeneratorPocPanel.exitCompanionText = value;
     render();
     return;
   }

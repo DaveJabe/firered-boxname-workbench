@@ -7,3 +7,10 @@ dist/
 # Personal local script imports for the Script Library — never commit
 # third-party script files.
 local-scripts/
+
+# Local-only E-Sh4rk generator artifact for the local-generator adapter
+# POC (docs/local-generator-poc.md). Upstream license is unresolved —
+# never commit, vendor, or publish anything placed in these paths.
+public/local-eshark-generator/
+.external/
+.local-generator/

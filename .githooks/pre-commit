@@ -1,0 +1,8 @@
+#!/bin/sh
+# Opt-in pre-commit hook — not enabled automatically. A developer enables it
+# once with: git config core.hooksPath .githooks
+#
+# Blocks a commit if E-Sh4rk's compiled generator artifact (ace_js.bc.js) is
+# staged — see docs/local-generator-poc.md and
+# scripts/check-artifact-not-tracked.mjs, which this just calls.
+node scripts/check-artifact-not-tracked.mjs

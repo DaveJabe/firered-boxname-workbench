@@ -50,8 +50,8 @@ describe('attribution/disclaimer text exists in docs', () => {
 });
 
 describe('app does not imply official E-Sh4rk affiliation', () => {
-  it('src/ui/app.ts\'s About/attribution card states independence and links only to plain-text repo URLs, no image/logo tags', () => {
-    const text = readRepoFile('src/ui/app.ts');
+  it('src/ui/renderAdvanced.ts\'s About/attribution card states independence and links only to plain-text repo URLs, no image/logo tags', () => {
+    const text = readRepoFile('src/ui/renderAdvanced.ts');
     const aboutCardMatch = /<h3>About &amp; attribution<\/h3>[\s\S]*?<\/div>/.exec(text);
     expect(aboutCardMatch).not.toBeNull();
     const card = aboutCardMatch![0];
@@ -73,23 +73,24 @@ describe('app does not imply official E-Sh4rk affiliation', () => {
 
 describe('local generator POC remains gated and optional', () => {
   it('the dev-only panel is still gated by the exact fbw.enableLocalGeneratorPoc localStorage check', () => {
-    const text = readRepoFile('src/ui/app.ts');
+    const text = readRepoFile('src/ui/renderAdvanced.ts');
     expect(text).toContain("window.localStorage.getItem('fbw.enableLocalGeneratorPoc') === 'true'");
   });
 
   it('the panel render call is still conditioned on isLocalGeneratorPocEnabled()', () => {
-    const text = readRepoFile('src/ui/app.ts');
+    const text = readRepoFile('src/ui/renderAdvanced.ts');
     expect(text).toMatch(/isLocalGeneratorPocEnabled\(\)\s*\?\s*renderLocalGeneratorPocPanel\(\)\s*:\s*''/);
   });
 
   it('running the local generator POC still requires an explicit button click, not an automatic call', () => {
-    const text = readRepoFile('src/ui/app.ts');
-    expect(text).toContain('data-action="run-local-generator-poc"');
+    const renderText = readRepoFile('src/ui/renderAdvanced.ts');
+    const handlerText = readRepoFile('src/ui/eventHandlers.ts');
+    expect(renderText).toContain('data-action="run-local-generator-poc"');
     // The only call site is the click-handler case body itself — an
     // assignment inside the async handleClick switch, never a bare
     // top-level or render()-time invocation.
-    const callSites = text.match(/\brunLocalGeneratorPoc\(/g) ?? [];
+    const callSites = handlerText.match(/\brunLocalGeneratorPoc\(/g) ?? [];
     expect(callSites).toHaveLength(1);
-    expect(text).toContain('poc.lastResult = await runLocalGeneratorPoc(');
+    expect(handlerText).toContain('poc.lastResult = await runLocalGeneratorPoc(');
   });
 });

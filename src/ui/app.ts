@@ -60,6 +60,7 @@ import {
   summarizeVariantVerification,
   summarizePresetVerification,
   describeSchemaVerificationSetupError,
+  describeGeneratorInputReadiness,
   runAllSchemaReviewCases,
   type ActionVariantVerificationStatus,
   type SchemaReviewCaseBatchResult,
@@ -147,6 +148,13 @@ import {
 } from '../data/storage.js';
 import { escapeHtml, attr, downloadText, openHtmlInNewTab, copyText } from './dom.js';
 import { resolveExitCompanionForScript, isExitCompanionScript } from '../core/exitCompanion.js';
+import {
+  summarizeActionAvailabilityForTarget,
+  targetsWithReadyActions,
+  buildActionAvailabilityMatrix,
+  collectKnownTargets,
+  type ActionAvailabilityDetail,
+} from '../core/actionAvailability.js';
 import { buildGeneratorInputBundle, formatGeneratorInputBundleText } from '../core/generatorInputBundle.js';
 // EXPERIMENTAL, DEV-ONLY. Only ever called from the "Local generator POC"
 // panel below (gated by the fbw.enableLocalGeneratorPoc localStorage flag),
@@ -1322,6 +1330,46 @@ function reviewCaseSectionHtml(curated: CuratedActionSchema): string {
   </div>`;
 }
 
+/**
+ * Run Script's "no runnable action for this target" empty state — explains
+ * WHY (using core/actionAvailability.ts, never scanner internals), and
+ * points at nearby targets that do have ready actions, so a user isn't
+ * left guessing whether to fetch/review more or just pick a different
+ * target. Never shows schema/script ids or Catalog Audit detail.
+ */
+function runScriptEmptyStateHtml(project: Project, target: GameTarget): string {
+  const availability = summarizeActionAvailabilityForTarget(project, target, nowIso);
+  const reasons: string[] = [];
+  if (availability.missingNoReviewedVariant > 0) {
+    reasons.push(`${availability.missingNoReviewedVariant} action(s) have no reviewed variant for this exact target yet`);
+  }
+  if (availability.needsReview > 0) {
+    reasons.push(`${availability.needsReview} action(s) have a variant for this target still awaiting review`);
+  }
+  if (availability.blockedBySchemaScriptMismatch > 0) {
+    reasons.push(`${availability.blockedBySchemaScriptMismatch} action(s) have a variant for this target that isn't usable right now (disabled, detached, or missing its script)`);
+  }
+  if (availability.blockedByMissingCompanion > 0) {
+    reasons.push(`${availability.blockedByMissingCompanion} action(s) are otherwise ready but missing their exit companion`);
+  }
+  const reasonHtml = reasons.length
+    ? `<p class="muted">Why: ${reasons.map((r) => escapeHtml(r)).join('; ')}.</p>`
+    : `<p class="muted">No action in this workspace has been reviewed for this target yet.</p>`;
+
+  const nearby = targetsWithReadyActions(project, target, nowIso).slice(0, 5);
+  const nearbyHtml = nearby.length
+    ? `<p class="muted">Targets with ready actions right now:</p>
+       <ul>${nearby.map((n) => `<li>${escapeHtml(targetLabel(n.target))} — ${n.readyActions} ready action${n.readyActions === 1 ? '' : 's'}</li>`).join('')}</ul>`
+    : `<p class="muted">No target in this workspace has a ready action yet.</p>`;
+
+  return `<div class="card" style="border-color:#e0a458;background:#fffaf2">
+    <p class="muted">No supported action is ready for <strong>${escapeHtml(targetLabel(target))}</strong> yet.</p>
+    ${reasonHtml}
+    ${nearbyHtml}
+    <button class="btn" data-action="nav" data-screen="scripts">Go to Setup to review a schema or apply a reviewed preset</button>
+  </div>`;
+}
+
 function renderActions(): string {
   const p = state.project!;
   const ab = state.actionBuilder;
@@ -1364,9 +1412,7 @@ function renderActions(): string {
       ${introLine}
       <h2>Step 1 of 3 <span class="pill">Choose action</span></h2>
       ${targetCard}
-      <div class="card" style="border-color:#e0a458;background:#fffaf2">
-        <p class="muted">No supported action is ready for this target yet. Review a schema, or apply a reviewed preset for it, in Manage Scripts.</p>
-      </div>`;
+      ${runScriptEmptyStateHtml(p, ab.runTarget)}`;
   }
 
   const selectedAction = runnableActions.find((a) => a.actionKey === ab.selectedActionKey) ?? runnableActions[0]!;
@@ -1388,7 +1434,15 @@ function renderActions(): string {
   const curatedByKey = new Map(curated.fields.map((f) => [f.key, f]));
   const fieldsHtml = template.fields.map((f) => renderActionField(f, ab.values, ab.referenceSearch) + curatedFieldExtra(curatedByKey.get(f.key))).join('');
 
-  const statusLine = `<p class="muted">Target: ${escapeHtml(targetLabel(selectedVariant.target))}${selectedVariant.scriptFilename ? ' · from ' + escapeHtml(selectedVariant.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}</p>`;
+  // Concise target-compatibility + generator-input-readiness line — no
+  // schema/script ids, no Catalog Audit detail (see core/actionAvailability.ts).
+  const generatorInputReadiness = describeGeneratorInputReadiness(curated, p, nowIso).status;
+  const readinessBadge = generatorInputReadiness === 'missing-exit-companion'
+    ? ' · <span class="badge warning">generator input: missing exit companion</span>'
+    : generatorInputReadiness === 'ready'
+      ? ' · <span class="badge info">generator input ready</span>'
+      : '';
+  const statusLine = `<p class="muted">Target: ${escapeHtml(targetLabel(selectedVariant.target))}${selectedVariant.scriptFilename ? ' · from ' + escapeHtml(selectedVariant.scriptFilename) : ''}${!supportsRevision(curated, ab.revisionLabel) ? ' · <span class="badge warning">not listed for this revision</span>' : ''}${readinessBadge}</p>`;
 
   const linkedScript = curated.scriptId ? p.scripts.find((s) => s.id === curated.scriptId) : undefined;
   const filledScriptCard = linkedScript
@@ -1979,6 +2033,60 @@ function readyActionCardHtml(action: SupportedAction): string {
  * cards, raw text, directive/candidate tables, draft schema, JSON
  * export/import) lives in renderScripts()'s own details disclosure, not here.
  */
+/** Setup matrix cell label — collapses core/actionAvailability.ts's finer-grained detail into the four statuses this table shows. */
+function actionAvailabilityCellLabel(detail: ActionAvailabilityDetail): { text: string; pillClass: string } {
+  switch (detail.kind) {
+    case 'ready':
+      return { text: 'Ready', pillClass: 'reviewed' };
+    case 'missing-companion':
+      return { text: 'Missing companion', pillClass: 'draft' };
+    case 'needs-review':
+      return { text: 'Needs review', pillClass: 'draft' };
+    case 'no-variant-for-target':
+    case 'schema-script-mismatch':
+      return { text: 'Not available', pillClass: 'disabled' };
+  }
+}
+
+/**
+ * Compact "Action availability by target" matrix — Setup only. Rows are
+ * action labels, columns are every target found in the supported-action
+ * registry, cells are one of Ready/Missing companion/Needs review/Not
+ * available (core/actionAvailability.ts). Never shows schema/script ids or
+ * per-field catalog-gap detail — that stays in Catalog Audit.
+ */
+function actionAvailabilityMatrixHtml(project: Project): string {
+  const targets = collectKnownTargets(project);
+  if (targets.length === 0) return '';
+  const cells = buildActionAvailabilityMatrix(project, targets, nowIso);
+  const actionKeys = [...new Set(cells.map((c) => c.actionKey))];
+  const actionLabels = new Map(cells.map((c) => [c.actionKey, c.actionLabel]));
+  const cellByActionTarget = new Map(cells.map((c) => [`${c.actionKey}::${targetLabel(c.target)}`, c]));
+
+  const headerCells = targets.map((t) => `<th>${escapeHtml(targetLabel(t))}</th>`).join('');
+  const bodyRows = actionKeys
+    .map((actionKey) => {
+      const rowCells = targets
+        .map((t) => {
+          const cell = cellByActionTarget.get(`${actionKey}::${targetLabel(t)}`);
+          if (!cell) return '<td>—</td>';
+          const { text, pillClass } = actionAvailabilityCellLabel(cell.detail);
+          return `<td><span class="pill status-${pillClass}">${escapeHtml(text)}</span></td>`;
+        })
+        .join('');
+      return `<tr><td>${escapeHtml(actionLabels.get(actionKey) ?? actionKey)}</td>${rowCells}</tr>`;
+    })
+    .join('');
+
+  return `<details>
+    <summary class="muted" style="cursor:pointer">Action availability by target <span class="pill">Setup only</span></summary>
+    <div class="card">
+      <p class="muted">Which actions are ready for which reviewed target — a quick cross-reference, not a new source of truth. Statuses mirror what's shown elsewhere in Setup.</p>
+      <table><thead><tr><th>Action</th>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table>
+    </div>
+  </details>`;
+}
+
 function compactCatalogHtml(project: Project): string {
   if (project.scripts.length === 0) return '';
   const registry = buildSupportedActionRegistry(project);
@@ -2454,6 +2562,7 @@ function renderScripts(): string {
       </div>
     </div>
     ${compactCatalogHtml(p)}
+    ${actionAvailabilityMatrixHtml(p)}
     ${variantVerificationPanelHtml(p)}
     ${similarScriptsPanelHtml(p)}
     ${unattachedHtml}
